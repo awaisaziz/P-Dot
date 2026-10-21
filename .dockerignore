@@ -1,0 +1,26 @@
+# Keep secrets and local state out of the image. The standalone server would
+# read any .env file in its folder at runtime.
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+node_modules
+.next
+.open-next
+.wrangler
+out
+dist
+coverage
+.git
+.github
+.claude
+.idea
+docs/pdf
+tests/evals/reports
+supabase/.temp
+supabase/.branches
+deploy/data
+*.log
+Thumbs.db
+.DS_Store

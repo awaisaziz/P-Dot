@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { TOOLS_MAX_BYTES } from "@/server/assistant/tools";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { prepareChatTurn, streamChatTurn, type AssistantDeps } from "@/server/assistant/service";
 import { nebiusHoldMicroUsd } from "@/server/assistant/spend";
@@ -82,7 +83,8 @@ describe("routed chat replies", () => {
     // The failed attempt had no usage, so its full hold stays counted.
     expect(first!.settled).toBe(first!.held);
     // The second hold is for Nano and the real prompt; it settles the real cost.
-    expect(second!.held).toBe(nebiusHoldMicroUsd(NANO, sent[1]!, 1024));
+    // The tools offered in the call count toward its worst case.
+    expect(second!.held).toBe(nebiusHoldMicroUsd(NANO, sent[1]!, 1024, TOOLS_MAX_BYTES));
     expect(second!.settled).toBe(costMicroUsd(price(NANO), { promptTokens: 10, completionTokens: 5 }));
   });
 

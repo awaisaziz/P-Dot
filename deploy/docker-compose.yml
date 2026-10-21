@@ -1,0 +1,257 @@
+# P-Dot on one virtual machine with its own (internal) database.
+# See docs/DEPLOYMENT-VM.md for the steps. Nothing here is reachable from the
+# internet except Caddy (ports 80 and 443), which serves only the app.
+#
+#   db       Postgres with the Supabase extensions and roles (data in ./data/db)
+#   migrate  Applies supabase/migrations/*.sql once each, in order
+#   auth     Supabase Auth (GoTrue): sign up, sign in, password reset
+#   rest     PostgREST: the data API the app uses, under row-level security
+#   kong     The gateway in front of auth and rest (/auth/v1, /rest/v1), with API keys
+#   app      P-Dot (the Dockerfile at the repository root)
+#   caddy    HTTPS for the app (automatic certificates for DOMAIN)
+#   studio   Optional admin UI on 127.0.0.1:54323 (profile "studio"); never expose it
+#
+# Copy .env.example to .env and fill it in (deploy/generate-keys.mjs makes the keys).
+
+name: pdot
+
+x-logging: &logging
+  logging:
+    driver: json-file
+    options: { max-size: "10m", max-file: "5" }
+
+services:
+  db:
+    image: public.ecr.aws/supabase/postgres:17.11.0.004
+    <<: *logging
+    restart: unless-stopped
+    command:
+      - postgres
+      - -c
+      - config_file=/etc/postgresql/postgresql.conf
+      - -c
+      - log_min_messages=fatal
+    environment:
+      POSTGRES_HOST: /var/run/postgresql
+      PGPORT: 5432
+      POSTGRES_PORT: 5432
+      PGPASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      PGDATABASE: postgres
+      POSTGRES_DB: postgres
+      JWT_SECRET: ${JWT_SECRET}
+      JWT_EXP: ${JWT_EXPIRY:-3600}
+    volumes:
+      - ./db/roles.sql:/docker-entrypoint-initdb.d/init-scripts/99-roles.sql:ro
+      - ./db/jwt.sql:/docker-entrypoint-initdb.d/init-scripts/99-jwt.sql:ro
+      - ./db/auth-owner.sql:/docker-entrypoint-initdb.d/migrations/99-auth-owner.sql:ro
+      - ./data/db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "postgres", "-h", "localhost"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  migrate:
+    image: public.ecr.aws/supabase/postgres:17.11.0.004
+    <<: *logging
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      PGHOST: db
+      PGPORT: 5432
+      PGUSER: postgres
+      PGPASSWORD: ${POSTGRES_PASSWORD}
+      PGDATABASE: postgres
+    volumes:
+      - ../supabase/migrations:/migrations:ro
+      - ./db/migrate.sh:/migrate.sh:ro
+    entrypoint: ["bash", "/migrate.sh"]
+    restart: "no"
+
+  auth:
+    image: public.ecr.aws/supabase/gotrue:v2.197.0
+    <<: *logging
+    restart: unless-stopped
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    environment:
+      GOTRUE_API_HOST: 0.0.0.0
+      GOTRUE_API_PORT: 9999
+      API_EXTERNAL_URL: ${API_EXTERNAL_URL:-http://kong:8000}
+      GOTRUE_DB_DRIVER: postgres
+      GOTRUE_DB_DATABASE_URL: postgres://supabase_auth_admin:${POSTGRES_PASSWORD}@db:5432/postgres
+      GOTRUE_SITE_URL: ${SITE_URL}
+      GOTRUE_URI_ALLOW_LIST: ${SITE_URL}/**
+      GOTRUE_DISABLE_SIGNUP: ${DISABLE_SIGNUP:-false}
+      GOTRUE_JWT_ADMIN_ROLES: service_role
+      GOTRUE_JWT_AUD: authenticated
+      GOTRUE_JWT_DEFAULT_GROUP_NAME: authenticated
+      GOTRUE_JWT_EXP: ${JWT_EXPIRY:-3600}
+      GOTRUE_JWT_SECRET: ${JWT_SECRET}
+      GOTRUE_EXTERNAL_EMAIL_ENABLED: "true"
+      GOTRUE_EXTERNAL_PHONE_ENABLED: "false"
+      GOTRUE_EXTERNAL_ANONYMOUS_USERS_ENABLED: "false"
+      # Without SMTP, accounts are confirmed at sign-up. With SMTP, set ENABLE_EMAIL_AUTOCONFIRM=false.
+      GOTRUE_MAILER_AUTOCONFIRM: ${ENABLE_EMAIL_AUTOCONFIRM:-true}
+      GOTRUE_SMTP_ADMIN_EMAIL: ${SMTP_ADMIN_EMAIL:-}
+      GOTRUE_SMTP_HOST: ${SMTP_HOST:-}
+      GOTRUE_SMTP_PORT: ${SMTP_PORT:-587}
+      GOTRUE_SMTP_USER: ${SMTP_USER:-}
+      GOTRUE_SMTP_PASS: ${SMTP_PASS:-}
+      GOTRUE_SMTP_SENDER_NAME: ${SMTP_SENDER_NAME:-P-Dot}
+      GOTRUE_MAILER_URLPATHS_CONFIRMATION: /auth/v1/verify
+      GOTRUE_MAILER_URLPATHS_RECOVERY: /auth/v1/verify
+      GOTRUE_MAILER_URLPATHS_EMAIL_CHANGE: /auth/v1/verify
+      GOTRUE_MAILER_URLPATHS_INVITE: /auth/v1/verify
+      GOTRUE_PASSWORD_MIN_LENGTH: 8
+      GOTRUE_RATE_LIMIT_EMAIL_SENT: ${RATE_LIMIT_EMAIL_SENT:-10}
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:9999/health"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  rest:
+    image: public.ecr.aws/supabase/postgrest:v16.4
+    <<: *logging
+    restart: unless-stopped
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    environment:
+      PGRST_DB_URI: postgres://authenticator:${POSTGRES_PASSWORD}@db:5432/postgres
+      # Only "public": the image does not create graphql_public, and the app does not use GraphQL.
+      PGRST_DB_SCHEMAS: public
+      PGRST_DB_EXTRA_SEARCH_PATH: public,extensions
+      PGRST_DB_ANON_ROLE: anon
+      PGRST_JWT_SECRET: ${JWT_SECRET}
+      PGRST_DB_USE_LEGACY_GUCS: "false"
+      PGRST_APP_SETTINGS_JWT_SECRET: ${JWT_SECRET}
+      PGRST_APP_SETTINGS_JWT_EXP: ${JWT_EXPIRY:-3600}
+      PGRST_DB_MAX_ROWS: 1000
+    command: ["postgrest"]
+
+  kong:
+    image: public.ecr.aws/supabase/kong:2.8.1
+    <<: *logging
+    restart: unless-stopped
+    depends_on:
+      - auth
+      - rest
+    environment:
+      KONG_DATABASE: "off"
+      KONG_DECLARATIVE_CONFIG: /home/kong/kong.yml
+      KONG_DNS_ORDER: LAST,A,CNAME
+      KONG_PLUGINS: request-transformer,cors,key-auth,acl
+      KONG_NGINX_PROXY_PROXY_BUFFER_SIZE: 160k
+      KONG_NGINX_PROXY_PROXY_BUFFERS: 64 160k
+      SUPABASE_ANON_KEY: ${ANON_KEY}
+      SUPABASE_SERVICE_KEY: ${SERVICE_ROLE_KEY}
+    volumes:
+      - ./kong.yml:/home/kong/temp.yml:ro
+    # The API keys are read from the environment into the declarative config at start.
+    entrypoint: bash -c 'eval "echo \"$$(cat ~/temp.yml)\"" > ~/kong.yml && /docker-entrypoint.sh kong docker-start'
+    ports:
+      # Local checks only. Remove this mapping on a public machine, or bind it to 127.0.0.1.
+      - "${KONG_BIND:-127.0.0.1}:${KONG_PORT:-8000}:8000"
+
+  app:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    image: p-dot:vm
+    <<: *logging
+    restart: unless-stopped
+    depends_on:
+      - kong
+    environment:
+      # Only the server talks to Supabase, over the private network (runtime names: the
+      # image is built once and never needs the NEXT_PUBLIC_* build-time values).
+      SUPABASE_URL: http://kong:8000
+      SUPABASE_PUBLISHABLE_KEY: ${ANON_KEY}
+      SITE_URL: ${SITE_URL}
+      NEBIUS_API_KEY: ${NEBIUS_API_KEY:-}
+      NEBIUS_BASE_URL: ${NEBIUS_BASE_URL:-https://api.tokenfactory.nebius.com/v1}
+      TAVILY_API_KEY: ${TAVILY_API_KEY:-}
+      NEBIUS_FAST_MODELS: ${NEBIUS_FAST_MODELS:-}
+      NEBIUS_STANDARD_MODELS: ${NEBIUS_STANDARD_MODELS:-}
+      NEBIUS_HEAVY_MODELS: ${NEBIUS_HEAVY_MODELS:-}
+      NEBIUS_VISION_MODELS: ${NEBIUS_VISION_MODELS:-}
+      NEBIUS_MAX_OUTPUT_TOKENS: ${NEBIUS_MAX_OUTPUT_TOKENS:-}
+      NEBIUS_STANDARD_MAX_OUTPUT_TOKENS: ${NEBIUS_STANDARD_MAX_OUTPUT_TOKENS:-}
+      NEBIUS_HEAVY_MAX_OUTPUT_TOKENS: ${NEBIUS_HEAVY_MAX_OUTPUT_TOKENS:-}
+      NEBIUS_HEAVY_THINKING_BUDGET: ${NEBIUS_HEAVY_THINKING_BUDGET:-}
+      NEBIUS_HEDGE_AFTER_MS: ${NEBIUS_HEDGE_AFTER_MS:-}
+      NEBIUS_DAILY_CAP_USD: ${NEBIUS_DAILY_CAP_USD:-}
+      NEBIUS_TOTAL_CAP_USD: ${NEBIUS_TOTAL_CAP_USD:-}
+      NEBIUS_USER_DAILY_CAP_USD: ${NEBIUS_USER_DAILY_CAP_USD:-}
+      TAVILY_DAILY_CREDITS: ${TAVILY_DAILY_CREDITS:-}
+      TAVILY_MONTHLY_CREDITS: ${TAVILY_MONTHLY_CREDITS:-}
+      TAVILY_USER_DAILY_CREDITS: ${TAVILY_USER_DAILY_CREDITS:-}
+      CHAT_REQUESTS_PER_WINDOW: ${CHAT_REQUESTS_PER_WINDOW:-}
+      CHAT_WINDOW_SECONDS: ${CHAT_WINDOW_SECONDS:-}
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-}
+      OLLAMA_EMBEDDING_MODEL: ${OLLAMA_EMBEDDING_MODEL:-}
+    ports:
+      # Local checks only; Caddy is the public entry. Bind to 127.0.0.1 on a public machine.
+      - "${APP_BIND:-127.0.0.1}:${APP_PORT:-3000}:3000"
+    extra_hosts:
+      # Lets an Ollama on the host stand in for Nebius during a dry run (OLLAMA_BASE_URL).
+      - "host.docker.internal:host-gateway"
+
+  caddy:
+    image: caddy:2.8-alpine
+    <<: *logging
+    profiles: ["public"]
+    restart: unless-stopped
+    depends_on:
+      - app
+    environment:
+      DOMAIN: ${DOMAIN}
+      ACME_EMAIL: ${ACME_EMAIL:-}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./data/caddy:/data
+      - ./data/caddy-config:/config
+    ports:
+      - "80:80"
+      - "443:443"
+
+  meta:
+    image: public.ecr.aws/supabase/postgres-meta:v0.100.0
+    <<: *logging
+    profiles: ["studio"]
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      PG_META_PORT: 8080
+      PG_META_DB_HOST: db
+      PG_META_DB_PORT: 5432
+      PG_META_DB_NAME: postgres
+      PG_META_DB_USER: supabase_admin
+      PG_META_DB_PASSWORD: ${POSTGRES_PASSWORD}
+
+  studio:
+    image: public.ecr.aws/supabase/studio:2026.10.12-sha-3699278
+    <<: *logging
+    profiles: ["studio"]
+    restart: unless-stopped
+    depends_on:
+      - meta
+    environment:
+      STUDIO_PG_META_URL: http://meta:8080
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      DEFAULT_ORGANIZATION_NAME: P-Dot
+      DEFAULT_PROJECT_NAME: P-Dot
+      SUPABASE_URL: http://kong:8000
+      SUPABASE_PUBLIC_URL: http://127.0.0.1:${KONG_PORT:-8000}
+      SUPABASE_ANON_KEY: ${ANON_KEY}
+      SUPABASE_SERVICE_KEY: ${SERVICE_ROLE_KEY}
+      AUTH_JWT_SECRET: ${JWT_SECRET}
+    ports:
+      - "127.0.0.1:54323:3000"

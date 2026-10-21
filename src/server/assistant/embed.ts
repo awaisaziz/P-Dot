@@ -26,14 +26,17 @@ export function createBudgetedEmbedder(deps: {
   settings: EmbeddingSettings;
   spend: SpendGuard;
   fetchImpl?: typeof fetch;
+  /** The model ID the hold is priced for. Default EMBEDDING_MODEL; a local model is `ollama/<model>`. */
+  priceModel?: string;
 }): Embedder {
+  const priceModel = deps.priceModel ?? EMBEDDING_MODEL;
   return {
     async embed(texts, signal) {
       // Every batch's hold is checked before the first reservation, so a refusal spends nothing.
       const batches: { batch: string[]; hold: number }[] = [];
       for (let i = 0; i < texts.length; i += EMBEDDING_BATCH_SIZE) {
         const batch = texts.slice(i, i + EMBEDDING_BATCH_SIZE);
-        batches.push({ batch, hold: nebiusEmbeddingHoldMicroUsd(EMBEDDING_MODEL, batch) });
+        batches.push({ batch, hold: nebiusEmbeddingHoldMicroUsd(priceModel, batch) });
       }
       const out: number[][] = [];
       for (const { batch, hold } of batches) {
@@ -43,7 +46,7 @@ export function createBudgetedEmbedder(deps: {
         try {
           const result = await createEmbeddings(deps.settings, batch, { signal, fetchImpl: deps.fetchImpl });
           const usage = result.promptTokens === null ? null : { promptTokens: result.promptTokens, completionTokens: 0 };
-          charged = nebiusSettleMicroUsd(EMBEDDING_MODEL, hold, usage);
+          charged = nebiusSettleMicroUsd(priceModel, hold, usage);
           out.push(...result.vectors);
         } finally {
           // A failed settle leaves the full hold counted, which is the safe side.

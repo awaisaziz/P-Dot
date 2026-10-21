@@ -88,10 +88,16 @@ describe("check-worker-env command", () => {
     expect(result.stdout + result.stderr).not.toContain(FAKE);
   });
 
-  it("fails when started through a symbolic link", () => {
+  it("fails when started through a symbolic link", (ctx) => {
     const dir = project(withSecret);
     const link = join(dir, "linked-check.mjs");
-    symlinkSync(SCRIPT, link);
+    try {
+      symlinkSync(SCRIPT, link);
+    } catch (error) {
+      // Windows needs a privilege to make a symbolic link; the check still runs in CI on Linux.
+      if ((error as NodeJS.ErrnoException).code === "EPERM") return ctx.skip();
+      throw error;
+    }
     expect(run(dir, link).status).toBe(1);
   });
 

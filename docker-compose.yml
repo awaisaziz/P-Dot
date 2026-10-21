@@ -1,0 +1,45 @@
+# Local simulation of the production stack in Docker (docs/LOCAL-SIMULATION.md).
+#
+#   app     The P-Dot image (Dockerfile), the same code that runs in production.
+#   ollama  Optional (profile "ollama"): a local model server that stands in for
+#           Nebius. Use it when Ollama is not installed on this machine.
+#
+# The database and accounts come from the local Supabase stack started with
+# `npm run db:start` (reached through host.docker.internal). For a stack with
+# its own database, see deploy/docker-compose.yml.
+#
+# Copy .env.docker.example to .env.docker, then: docker compose up --build
+
+services:
+  app:
+    build:
+      context: .
+      args:
+        NEXT_PUBLIC_SUPABASE_URL: ${NEXT_PUBLIC_SUPABASE_URL:-http://host.docker.internal:54321}
+        NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: ${NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY:-}
+    image: p-dot:local
+    env_file:
+      - path: .env.docker
+        required: false
+    environment:
+      # The app reaches the host's Supabase and Ollama through this name.
+      SUPABASE_URL: ${SUPABASE_URL:-http://host.docker.internal:54321}
+      SITE_URL: ${SITE_URL:-http://localhost:3000}
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434/v1}
+    ports:
+      - "${APP_PORT:-3000}:3000"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+
+  ollama:
+    profiles: ["ollama"]
+    image: ollama/ollama:0.12.6
+    volumes:
+      - ollama-models:/root/.ollama
+    ports:
+      - "11434:11434"
+    restart: unless-stopped
+
+volumes:
+  ollama-models:

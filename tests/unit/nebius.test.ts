@@ -256,6 +256,87 @@ describe("streamChatCompletion", () => {
     controller.abort();
     await expectProviderError(pending, "aborted");
   });
+
+  it("sends tools parameter and accumulates streamed tool_calls delta chunks", async () => {
+    const tools = [
+      {
+        type: "function" as const,
+        function: {
+          name: "web_search" as const,
+          description: "Search",
+          parameters: { type: "object" as const, properties: { query: { type: "string" } } },
+        },
+      },
+    ];
+
+    const fetchImpl = fetchReturning(
+      sseResponse([
+        sseEvent({
+          choices: [
+            {
+              delta: {
+                tool_calls: [
+                  {
+                    index: 0,
+                    id: "call_abc",
+                    type: "function",
+                    function: { name: "web_search", arguments: '{"que' },
+                  },
+                ],
+              },
+            },
+          ],
+        }),
+        sseEvent({
+          choices: [
+            {
+              delta: {
+                tool_calls: [
+                  {
+                    index: 0,
+                    function: { arguments: 'ry":"tokyo"}' },
+                  },
+                ],
+              },
+            },
+          ],
+        }),
+        sseEvent(finishChunk("tool_calls")),
+        sseEvent("[DONE]"),
+      ]),
+    );
+
+    const chunks = await collect(
+      streamChatCompletion(settings, messages, { fetchImpl, tools, toolChoice: "auto" }),
+    );
+
+    const [url, init] = fetchImpl.mock.calls[0]!;
+    expect(url).toBe("https://nebius.test/v1/chat/completions");
+    const sentBody = JSON.parse(String(init?.body));
+    expect(sentBody.tools).toEqual(tools);
+    expect(sentBody.tool_choice).toBe("auto");
+
+    expect(chunks).toEqual([
+      {
+        type: "tool_calls",
+        calls: [
+          {
+            id: "call_abc",
+            type: "function",
+            function: {
+              name: "web_search",
+              arguments: '{"query":"tokyo"}',
+            },
+          },
+        ],
+      },
+      {
+        type: "finish",
+        finishReason: "tool_calls",
+        usage: { promptTokens: 12, completionTokens: 3 },
+      },
+    ]);
+  });
 });
 
 describe("createThinkFilter", () => {

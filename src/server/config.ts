@@ -4,7 +4,7 @@ import { ConfigError } from "@/lib/supabase-config";
 import { MODEL_TIERS, type ModelTier } from "@/lib/routing";
 import { buildRoutingConfig, DEFAULT_CHAINS, type RoutingConfig } from "@/server/assistant/tiers";
 import type { SpendCaps, SpendProvider } from "@/server/db/spend";
-import { priceForModel } from "@/server/providers/nebius/pricing";
+import { isLocalModel, priceForModel } from "@/server/providers/nebius/pricing";
 
 // Server-only configuration. Values are read per call (not at import time) so
 // `next build` works without secrets and misconfiguration fails the request
@@ -14,6 +14,15 @@ export interface AssistantConfig {
   nebius: {
     apiKey: string;
     baseUrl: string;
+  };
+  /**
+   * The local Ollama server (OpenAI-compatible `/v1`) that stands in for Nebius
+   * in local runs. A model chain names a local model as `ollama/<model>`.
+   * `embeddingModel` is set to embed locally; null keeps embeddings on Nebius.
+   */
+  ollama: {
+    baseUrl: string;
+    embeddingModel: string | null;
   };
   /** Model tiers: chains, output limits and timing (docs/decisions/0007-model-routing.md). */
   routing: RoutingConfig;
@@ -43,7 +52,8 @@ const MODEL_ID = /^[A-Za-z0-9._:/-]{1,200}$/;
 /**
  * A comma-separated list of 1 to 4 model IDs, tried in order. Every model must
  * have a price in the price table (the spend guard refuses unpriced models), so
- * an unpriced model is a config error, not a model the chain skips.
+ * an unpriced model is a config error, not a model the chain skips. A local
+ * `ollama/` model is priced at zero.
  */
 function modelChain(fallback: string[]) {
   return z
@@ -60,8 +70,10 @@ function chainEnvName(tier: ModelTier): string {
 }
 
 const assistantEnvSchema = z.object({
-  NEBIUS_API_KEY: z.string().trim().min(1),
+  NEBIUS_API_KEY: z.string().trim().min(1).optional(),
   NEBIUS_BASE_URL: z.url().default("https://api.tokenfactory.nebius.com/v1"),
+  OLLAMA_BASE_URL: z.url().default("http://127.0.0.1:11434/v1"),
+  OLLAMA_EMBEDDING_MODEL: z.string().trim().regex(MODEL_ID).optional(),
   NEBIUS_FAST_MODELS: modelChain(DEFAULT_CHAINS.fast),
   NEBIUS_STANDARD_MODELS: modelChain(DEFAULT_CHAINS.standard),
   NEBIUS_HEAVY_MODELS: modelChain(DEFAULT_CHAINS.heavy),
@@ -71,6 +83,7 @@ const assistantEnvSchema = z.object({
   NEBIUS_HEAVY_MAX_OUTPUT_TOKENS: outputTokens(4096),
   NEBIUS_HEAVY_THINKING_BUDGET: z.coerce.number().int().min(0).max(4096).default(1024),
   NEBIUS_HEDGE_AFTER_MS: z.coerce.number().int().min(0).max(10_000).default(1500),
+  NEBIUS_FIRST_TOKEN_TIMEOUT_MS: z.coerce.number().int().min(1_000).max(120_000).optional(),
   TAVILY_API_KEY: z.string().trim().optional(),
   CHAT_REQUESTS_PER_WINDOW: z.coerce.number().int().min(1).max(10_000).default(30),
   CHAT_WINDOW_SECONDS: z.coerce.number().int().min(60).max(2_678_400).default(3600),
@@ -92,6 +105,7 @@ const ROUTING_ENV_NAMES = [
   "NEBIUS_HEAVY_MAX_OUTPUT_TOKENS",
   "NEBIUS_HEAVY_THINKING_BUDGET",
   "NEBIUS_HEDGE_AFTER_MS",
+  "NEBIUS_FIRST_TOKEN_TIMEOUT_MS",
 ] as const;
 
 /** The reply needs this many tokens after the reasoning budget. */
@@ -112,8 +126,10 @@ function blankToUndefined(value: string | undefined): string | undefined {
 
 export function getAssistantConfig(env: NodeJS.ProcessEnv = process.env): AssistantConfig {
   const parsed = assistantEnvSchema.safeParse({
-    NEBIUS_API_KEY: env.NEBIUS_API_KEY,
+    NEBIUS_API_KEY: blankToUndefined(env.NEBIUS_API_KEY),
     NEBIUS_BASE_URL: blankToUndefined(env.NEBIUS_BASE_URL),
+    OLLAMA_BASE_URL: blankToUndefined(env.OLLAMA_BASE_URL),
+    OLLAMA_EMBEDDING_MODEL: blankToUndefined(env.OLLAMA_EMBEDDING_MODEL),
     ...Object.fromEntries(ROUTING_ENV_NAMES.map((name) => [name, blankToUndefined(env[name])])),
     TAVILY_API_KEY: blankToUndefined(env.TAVILY_API_KEY),
     CHAT_REQUESTS_PER_WINDOW: blankToUndefined(env.CHAT_REQUESTS_PER_WINDOW),
@@ -137,10 +153,18 @@ export function getAssistantConfig(env: NodeJS.ProcessEnv = process.env): Assist
     vision: e.NEBIUS_VISION_MODELS,
   };
   for (const tier of MODEL_TIERS) if (chains[tier].length === 0) throw new ConfigError([chainEnvName(tier)]);
+  // The Nebius key may be left out only when nothing would call Nebius: every
+  // chain is local and embeddings are local too.
+  const allLocal = MODEL_TIERS.every((tier) => chains[tier].every(isLocalModel));
+  if (!e.NEBIUS_API_KEY && !(allLocal && e.OLLAMA_EMBEDDING_MODEL)) throw new ConfigError(["NEBIUS_API_KEY"]);
   return {
     nebius: {
-      apiKey: e.NEBIUS_API_KEY,
+      apiKey: e.NEBIUS_API_KEY ?? "",
       baseUrl: e.NEBIUS_BASE_URL.replace(/\/+$/, ""),
+    },
+    ollama: {
+      baseUrl: e.OLLAMA_BASE_URL.replace(/\/+$/, ""),
+      embeddingModel: e.OLLAMA_EMBEDDING_MODEL ?? null,
     },
     routing: buildRoutingConfig({
       chains,
@@ -149,6 +173,7 @@ export function getAssistantConfig(env: NodeJS.ProcessEnv = process.env): Assist
       heavyMaxOutputTokens: e.NEBIUS_HEAVY_MAX_OUTPUT_TOKENS,
       heavyThinkingBudgetTokens: e.NEBIUS_HEAVY_THINKING_BUDGET,
       hedgeAfterMs: e.NEBIUS_HEDGE_AFTER_MS,
+      firstTokenTimeoutMs: e.NEBIUS_FIRST_TOKEN_TIMEOUT_MS,
     }),
     tavily: e.TAVILY_API_KEY ? { apiKey: e.TAVILY_API_KEY } : null,
     quota: {

@@ -99,6 +99,14 @@ export type ChatStreamEvent =
       message?: string;
     }
   | { type: "delta"; text: string }
+  /**
+   * The assistant is about to use a tool. `text` is what it said before the
+   * tool call (its plan) or a short description of the call. The browser shows
+   * it as a status line and clears the partial reply; nothing of it is saved.
+   */
+  | { type: "thought"; text: string }
+  /** The conversation got a title from its first exchange. Sent before `done`. */
+  | { type: "title"; title: string }
   | { type: "done"; message: MessageDTO; truncated: boolean }
   | { type: "error"; code: ApiErrorCode; message: string; retryable: boolean };
 

@@ -1,6 +1,6 @@
 import type { ChatStreamEvent } from "@/types/api";
 
-const EVENT_TYPES = new Set(["start", "search", "delta", "done", "error"]);
+const EVENT_TYPES = new Set(["start", "search", "thought", "delta", "title", "done", "error"]);
 
 function isChatStreamEvent(value: unknown): value is ChatStreamEvent {
   return (

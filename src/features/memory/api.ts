@@ -22,6 +22,21 @@ export async function deleteMemory(id: string): Promise<void> {
   await deleteResource(`/api/memories/${encodeURIComponent(id)}`);
 }
 
+export interface SummarizeResult {
+  ok: boolean;
+  extractedCount: number;
+  createdCount: number;
+  skippedCount: number;
+}
+
+/**
+ * Asks P-Dot to suggest lasting facts from a conversation as "Remember this?"
+ * cards. Best effort: the chat calls it when a conversation is left or grows.
+ */
+export async function summarizeConversation(conversationId: string): Promise<SummarizeResult> {
+  return sendJson<SummarizeResult>("/api/memories/summarize", "POST", { conversationId });
+}
+
 /** A user-facing message for a failed memory request. New or changed text needs the embedding service. */
 export function memoryErrorMessage(err: unknown, fallback: string): string {
   if (err instanceof ApiError && err.code === "not_configured") {

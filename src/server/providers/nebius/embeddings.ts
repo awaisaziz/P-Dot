@@ -1,7 +1,7 @@
 import "server-only";
 import { z } from "zod";
 import { EMBEDDING_DIMENSIONS } from "@/lib/limits";
-import { ProviderError, createAbortScope, discardBody, kindFromStatus } from "@/server/providers/errors";
+import { ProviderError, createAbortScope, discardBody, kindFromStatus, type ProviderName } from "@/server/providers/errors";
 import { parseRetryAfterMs } from "./client";
 
 /**
@@ -16,6 +16,10 @@ const EMBEDDING_TIMEOUT_MS = 20_000;
 export interface EmbeddingSettings {
   apiKey: string;
   baseUrl: string;
+  /** The model to call. Default EMBEDDING_MODEL; a local run names an Ollama model. */
+  model?: string;
+  /** Which provider this server is, for error reports. Default "nebius". */
+  provider?: ProviderName;
 }
 
 export interface EmbeddingResult {
@@ -46,6 +50,7 @@ export async function createEmbeddings(
   options: { signal?: AbortSignal; fetchImpl?: typeof fetch; timeoutMs?: number } = {},
 ): Promise<EmbeddingResult> {
   if (inputs.length === 0) return { vectors: [], promptTokens: 0 };
+  const provider = settings.provider ?? "nebius";
   const scope = createAbortScope({ totalMs: options.timeoutMs ?? EMBEDDING_TIMEOUT_MS, parent: options.signal });
   const fetchImpl = options.fetchImpl ?? fetch;
   try {
@@ -54,33 +59,33 @@ export async function createEmbeddings(
       response = await fetchImpl(`${settings.baseUrl}/embeddings`, {
         method: "POST",
         headers: { Authorization: `Bearer ${settings.apiKey}`, "Content-Type": "application/json" },
-        body: JSON.stringify({ model: EMBEDDING_MODEL, input: inputs, dimensions: EMBEDDING_DIMENSIONS }),
+        body: JSON.stringify({ model: settings.model ?? EMBEDDING_MODEL, input: inputs, dimensions: EMBEDDING_DIMENSIONS }),
         signal: scope.signal,
       });
     } catch {
-      if (scope.timedOut()) throw new ProviderError("nebius", "timeout");
-      if (options.signal?.aborted) throw new ProviderError("nebius", "aborted");
-      throw new ProviderError("nebius", "unavailable");
+      if (scope.timedOut()) throw new ProviderError(provider, "timeout");
+      if (options.signal?.aborted) throw new ProviderError(provider, "aborted");
+      throw new ProviderError(provider, "unavailable");
     }
     if (!response.ok) {
       const retryAfterMs = parseRetryAfterMs(response.headers.get("retry-after"));
       await discardBody(response);
-      throw new ProviderError("nebius", kindFromStatus(response.status), response.status, { retryAfterMs });
+      throw new ProviderError(provider, kindFromStatus(response.status), response.status, { retryAfterMs });
     }
     let body: unknown;
     try {
       body = await response.json();
     } catch {
-      if (scope.timedOut()) throw new ProviderError("nebius", "timeout");
-      throw new ProviderError("nebius", "bad_response");
+      if (scope.timedOut()) throw new ProviderError(provider, "timeout");
+      throw new ProviderError(provider, "bad_response");
     }
     const parsed = responseSchema.safeParse(body);
     if (!parsed.success || parsed.data.data.length !== inputs.length) {
-      throw new ProviderError("nebius", "bad_response");
+      throw new ProviderError(provider, "bad_response");
     }
     const vectors: number[][] = new Array(inputs.length);
     for (const item of parsed.data.data) {
-      if (item.index >= inputs.length || vectors[item.index]) throw new ProviderError("nebius", "bad_response");
+      if (item.index >= inputs.length || vectors[item.index]) throw new ProviderError(provider, "bad_response");
       vectors[item.index] = item.embedding;
     }
     const tokens = parsed.data.usage?.prompt_tokens;

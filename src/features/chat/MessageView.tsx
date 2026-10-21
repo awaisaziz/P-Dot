@@ -65,7 +65,11 @@ export function MessageItem({ message }: { message: UiMessage }) {
       {/* Rendered as text, never as HTML. */}
       <div className="message-content">{message.content}</div>
       {message.pending && <p className="hint">Sending…</p>}
-      {message.truncated && <p className="hint">This reply reached the length limit and may be incomplete.</p>}
+      {message.truncated && (
+        <p className="hint">
+          This reply reached the length limit and may be incomplete. You can reply <strong>&quot;continue&quot;</strong> to have P-Dot resume directly from where it left off.
+        </p>
+      )}
       {!isUser && message.webSearch === "used" && <SourceList sources={message.sources} />}
       {!isUser && (
         <div className="message-footer">

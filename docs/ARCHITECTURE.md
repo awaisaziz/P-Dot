@@ -17,10 +17,15 @@ Cloudflare Worker (OpenNext): Next.js API routes
    |-- assistant orchestration (src/server/assistant)
    |     |-- router: picks a model tier (no model call)
    |     |-- executor: retries, fallbacks, hedge, breaker
-   |     |-- Nebius Token Factory: streamed model inference
-   |     `-- Tavily: optional web retrieval
+   |     |-- tool loop (service.ts): at most 3 model calls per reply; tools read the
+   |     |     user's data, search the web, or create proposals the user approves
+   |     |-- Nebius Token Factory: streamed model inference (OpenAI-compatible)
+   |     |     `-- or a local Ollama for a model with the `ollama/` prefix (local simulation)
+   |     `-- Tavily: web retrieval (the search toggle, and the web_search tool)
    `-- persistence (src/server/db) -> Supabase Postgres with row-level security
 ```
+
+The same application also runs as one Node.js container (`Dockerfile`): on a computer against the local Supabase stack (`docker-compose.yml`, [LOCAL-SIMULATION.md](LOCAL-SIMULATION.md)), or on a virtual machine with its own Postgres, Supabase Auth and PostgREST behind a gateway (`deploy/docker-compose.yml`, [DEPLOYMENT-VM.md](DEPLOYMENT-VM.md)).
 
 A single Next.js application. Its API routes form the backend, deployed as one Cloudflare Worker through the OpenNext adapter ([decision 0004](decisions/0004-cloudflare-workers-deployment.md)); there is no separate always-on API server. Sessions are Supabase Auth cookies managed by `@supabase/ssr`. The app uses only the publishable key, so every database query runs under RLS as the signed-in user ([decision 0001](decisions/0001-supabase-auth-and-database.md)).
 
@@ -102,7 +107,9 @@ RLS allows each user to select and insert only their own rows and to delete only
 
 Nebius exposes an OpenAI-compatible API. The adapter calls `POST {NEBIUS_BASE_URL}/chat/completions` with `stream: true`, `stream_options.include_usage` (token usage for the spend guard) and `chat_template_kwargs.enable_thinking` (off, or on with `thinking_token_budget` for the heavy tier), and parses server-sent events, including errors sent mid-stream. Reasoning fields and a leading `<think>` block are never shown or saved. The base URL and the model chains are configuration.
 
-Model routing ([decision 0007](decisions/0007-model-routing.md)): a rule-based router picks a tier (`fast`, `standard`, `heavy` or `vision`) from the message, the conversation size, web search and the user's effort choice. The executor runs the tier's model chain through a provider interface (`src/server/providers/model.ts`). It retries and falls back only before the first visible token, uses one deadline for all attempts, hedges slow fast-tier calls once, and skips a failing model with a soft breaker in isolate memory (best effort, not shared). Each attempt holds and settles spend through the spend guard. Tavily `POST /search` is called with `basic` depth and at most five results, and only http(s) URLs are kept. Responses are validated with Zod, context is bounded, and both adapters have timeouts. Retrieved text goes in the final user turn inside `<web_search_results>` delimiters and is described to the model as untrusted data. The assistant has no tools, so retrieved content cannot trigger actions.
+Model routing ([decision 0007](decisions/0007-model-routing.md)): a rule-based router picks a tier (`fast`, `standard`, `heavy` or `vision`) from the message, the conversation size, web search and the user's effort choice. The executor runs the tier's model chain through a provider interface (`src/server/providers/model.ts`). It retries and falls back only before the first visible token or tool call, uses one deadline for all attempts, hedges slow fast-tier calls once, and skips a failing model with a soft breaker in isolate memory (best effort, not shared). Each attempt holds and settles spend through the spend guard. A model ID with the `ollama/` prefix goes to a local Ollama server through the same client at zero price ([decision 0013](decisions/0013-ai-layer-integration-and-local-simulation.md)). Tavily `POST /search` is called with `basic` depth and at most five results, and only http(s) URLs are kept. Responses are validated with Zod, context is bounded, and both adapters have timeouts. Retrieved text goes in the final user turn inside `<web_search_results>` delimiters and is described to the model as untrusted data.
+
+The tool loop ([decision 0013](decisions/0013-ai-layer-integration-and-local-simulation.md)): the model may call `web_search` (one Tavily credit each, held first), `search_documents` and `search_memories` (similarity search over the user's own rows, through the budgeted embedder), `save_memory` (a `proposed` memory the user keeps or discards), and `propose_task` or `propose_reminder` (an `action_proposals` row the user approves; nothing runs without approval, decision 0009). A reply has at most three model calls; the last one offers no tools, so the model answers with what it has. Each call holds and settles spend like any other attempt. Tool results go back to the model inside delimiters as untrusted data and never authorize anything. Memories that match the message are retrieved before the first call and placed in the system message; the context record lists the memory and document chunk IDs that were sent. A new conversation is named from its first exchange with one fast-tier call, and `POST /api/memories/summarize` suggests lasting facts from a conversation as `proposed` memories.
 
 Reference documentation:
 

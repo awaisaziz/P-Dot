@@ -1,4 +1,7 @@
+import type { ActionProposalRepository, NewActionProposal } from "@/server/db/action-proposals";
 import type { ConversationRepository, NewMessage } from "@/server/db/conversations";
+import type { MemoryRepository as MemoryStore, NewMemory } from "@/server/db/memories";
+import type { DocumentChunkMatch, MemoryMatch, RetrievalRepository } from "@/server/db/retrieval";
 import type { QuotaGate } from "@/server/db/quota";
 import type { SpendCaps, SpendGuard, SpendLimit, SpendProvider, SpendReservation } from "@/server/db/spend";
 import type { AssistantDeps } from "@/server/assistant/service";
@@ -6,7 +9,18 @@ import { createCircuitBreaker } from "@/server/assistant/breaker";
 import { buildRoutingConfig, type RoutingConfig } from "@/server/assistant/tiers";
 import type { ChatMessage, CompletionChunk, ModelCallRequest, ModelProvider } from "@/server/providers/model";
 import type { WebSearchResult } from "@/server/providers/tavily/client";
-import type { ConversationSummary, MessageDTO, Mode, TaskDTO } from "@/types/api";
+import type {
+  ActionPayload,
+  ActionProposalDTO,
+  ActionStatus,
+  ConversationSummary,
+  MemoryDTO,
+  MemoryStatus,
+  MessageDTO,
+  Mode,
+  TaskDTO,
+} from "@/types/api";
+import { actionPayloadSchema, actionSummarySchema } from "@/lib/schemas";
 import type { TaskRepository } from "@/server/db/tasks";
 import type { ContextRecordRepository, NewContextRecord } from "@/server/db/context-records";
 import { createBudgetedEmbedder, type Embedder } from "@/server/assistant/embed";
@@ -152,6 +166,135 @@ export class MemoryTasks implements TaskRepository {
   }
 }
 
+/** In-memory memories (decision 0009), scoped to the user like RLS. Vectors are kept for the retrieval fake. */
+export class FakeMemories implements MemoryStore {
+  memories: (MemoryDTO & { userId: string; embedding: number[] | null })[] = [];
+  private counter = 0;
+
+  private dto({ userId: _userId, embedding: _embedding, ...memory }: (typeof this.memories)[number]): MemoryDTO {
+    void _userId;
+    void _embedding;
+    return memory;
+  }
+
+  async listMemories(userId: string, mode: Mode, status: MemoryStatus | undefined, limit: number) {
+    return this.memories
+      .filter((m) => m.userId === userId && m.mode === mode && (!status || m.status === status))
+      .slice(-limit)
+      .reverse()
+      .map((m) => this.dto(m));
+  }
+
+  async getMemory(userId: string, id: string) {
+    const found = this.memories.find((m) => m.id === id && m.userId === userId);
+    return found ? this.dto(found) : null;
+  }
+
+  async createMemory(userId: string, memory: NewMemory, embedding: number[] | null) {
+    this.counter += 1;
+    const stored = {
+      id: `20000000-0000-4000-8000-${String(this.counter).padStart(12, "0")}`,
+      mode: memory.mode,
+      content: memory.content,
+      status: memory.status,
+      source: memory.source,
+      sourceMessageId: memory.sourceMessageId,
+      createdAt: new Date(Date.UTC(2026, 9, 20, 9, 0, this.counter)).toISOString(),
+      updatedAt: new Date(Date.UTC(2026, 9, 20, 9, 0, this.counter)).toISOString(),
+      userId,
+      embedding,
+    };
+    this.memories.push(stored);
+    return this.dto(stored);
+  }
+
+  async updateMemory(
+    userId: string,
+    id: string,
+    changes: { content?: string; mode?: Mode; status?: MemoryStatus },
+    embedding?: number[] | null,
+    ifContent?: string,
+  ) {
+    const found = this.memories.find((m) => m.id === id && m.userId === userId);
+    if (!found || (ifContent !== undefined && found.content !== ifContent)) return null;
+    Object.assign(found, changes);
+    if (embedding !== undefined) found.embedding = embedding;
+    return this.dto(found);
+  }
+
+  async setEmbeddingIfContent(userId: string, id: string, content: string, embedding: number[]) {
+    const found = this.memories.find((m) => m.id === id && m.userId === userId && m.content === content);
+    if (!found) return false;
+    found.embedding = embedding;
+    return true;
+  }
+
+  async deleteMemory(userId: string, id: string) {
+    const before = this.memories.length;
+    this.memories = this.memories.filter((m) => !(m.id === id && m.userId === userId));
+    return this.memories.length < before;
+  }
+}
+
+/** Similarity search fake: returns what a test scripted, and records the queries. */
+export class FakeRetrieval implements RetrievalRepository {
+  memoryMatches: MemoryMatch[] = [];
+  chunkMatches: DocumentChunkMatch[] = [];
+  calls: { kind: "memories" | "chunks"; mode: Mode; count: number }[] = [];
+
+  async matchMemories(_vector: number[], mode: Mode, count: number) {
+    this.calls.push({ kind: "memories", mode, count });
+    return this.memoryMatches.slice(0, count);
+  }
+
+  async matchDocumentChunks(_vector: number[], mode: Mode, count: number) {
+    this.calls.push({ kind: "chunks", mode, count });
+    return this.chunkMatches.slice(0, count);
+  }
+}
+
+/** In-memory action proposals (decision 0009). Inserts only; decisions are not modelled. */
+export class FakeProposals implements ActionProposalRepository {
+  proposals: (ActionProposalDTO & { userId: string })[] = [];
+  private counter = 0;
+
+  async createProposal(userId: string, proposal: NewActionProposal) {
+    const payload: ActionPayload = actionPayloadSchema.parse(proposal.payload);
+    const summary = actionSummarySchema.parse(proposal.summary);
+    this.counter += 1;
+    const stored = {
+      id: `30000000-0000-4000-8000-${String(this.counter).padStart(12, "0")}`,
+      conversationId: proposal.conversationId,
+      payload,
+      summary,
+      status: "proposed" as ActionStatus,
+      result: null,
+      createdAt: new Date(Date.UTC(2026, 9, 20, 10, 0, this.counter)).toISOString(),
+      decidedAt: null,
+      verified: false,
+      userId,
+    };
+    this.proposals.push(stored);
+    const { userId: _userId, ...dto } = stored;
+    void _userId;
+    return dto;
+  }
+
+  async listProposals(userId: string, status: ActionStatus | undefined, limit: number) {
+    return this.proposals
+      .filter((p) => p.userId === userId && (!status || p.status === status))
+      .slice(0, limit)
+      .map(({ userId: _userId, ...dto }) => {
+        void _userId;
+        return dto;
+      });
+  }
+
+  async decide(): Promise<never> {
+    throw new Error("not modelled");
+  }
+}
+
 /** The default caps from config, in micro-dollars (Nebius) and credits (Tavily). */
 export const TEST_SPEND_CAPS: Record<SpendProvider, SpendCaps> = {
   nebius: { day: 1_000_000, period: 20_000_000, userDay: 250_000 },
@@ -264,11 +407,20 @@ export interface FakeDepsOptions {
   /** Every tier uses only this model (default: Super), so prices stay simple in tests. */
   model?: string;
   search?: ((query: string, signal: AbortSignal) => Promise<WebSearchResult[]>) | null;
-  reply?: string[] | ((messages: ChatMessage[], signal: AbortSignal) => AsyncIterable<CompletionChunk>);
+  /** The reply, or a function that gets the messages, the signal and the whole request (with its tools). */
+  reply?:
+    | string[]
+    | ((messages: ChatMessage[], signal: AbortSignal, request: ModelCallRequest) => AsyncIterable<CompletionChunk>);
   /** Replaces the simple reply provider (for routing tests). */
   provider?: ModelProvider;
   routing?: RoutingConfig;
   contextRecords?: ContextRecordRepository;
+  /** The tool loop's data. Each one is offered to the model only when set. */
+  memories?: FakeMemories;
+  retrieval?: FakeRetrieval;
+  actionProposals?: FakeProposals;
+  embedder?: Embedder;
+  smartTitles?: boolean;
 }
 
 export function fakeDeps(options: FakeDepsOptions = {}) {
@@ -297,7 +449,7 @@ export function fakeDeps(options: FakeDepsOptions = {}) {
       stream: (request, signal) => {
         calls.push(request);
         prompts.push(request.messages);
-        if (typeof reply === "function") return reply(request.messages, signal);
+        if (typeof reply === "function") return reply(request.messages, signal, request);
         return (async function* () {
           for (const text of reply) yield { type: "text" as const, text };
           yield { type: "finish" as const, finishReason: "stop", usage: { promptTokens: 10, completionTokens: 2 } };
@@ -305,6 +457,11 @@ export function fakeDeps(options: FakeDepsOptions = {}) {
       },
     },
     ...(options.contextRecords ? { contextRecords: options.contextRecords } : {}),
+    ...(options.memories ? { memories: options.memories } : {}),
+    ...(options.retrieval ? { retrieval: options.retrieval } : {}),
+    ...(options.actionProposals ? { actionProposals: options.actionProposals } : {}),
+    ...(options.embedder ? { embedder: options.embedder } : {}),
+    ...(options.smartTitles ? { smartTitles: true } : {}),
     breaker: createCircuitBreaker({ threshold: 3, cooldownMs: 30_000 }),
     random: () => 0,
     now: () => new Date(Date.UTC(2026, 9, 14, 12, 30, 0)),

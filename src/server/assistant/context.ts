@@ -51,3 +51,30 @@ export function titleFromMessage(message: string, maxChars = 60): string {
   if (collapsed.length === 0) return "New conversation";
   return collapsed.length > maxChars ? `${collapsed.slice(0, maxChars - 1).trimEnd()}…` : collapsed;
 }
+
+/** The system message for naming a conversation from its first message. */
+export const SMART_TITLE_SYSTEM_PROMPT =
+  "You name conversations. Reply with only a title of 2 to 5 words that says what the user's message is about. No quotation marks, no punctuation at the end, no words such as 'Title:' or 'Sure'. Examples: Tokyo trip planning, React hook cleanup, Weekly meal ideas.";
+
+/**
+ * A usable title from a model's reply, or null when the reply is not one:
+ * the first line, without quotes, Markdown marks or a "Title:" prefix, from 2
+ * to 60 characters. The caller keeps the old title on null.
+ */
+export function smartTitleFromText(raw: string): string | null {
+  const firstLine = raw
+    .replace(/<think>[\s\S]*?<\/think>/gi, "")
+    .split("\n")
+    .map((line) => line.trim())
+    .find((line) => line.length > 0);
+  if (!firstLine) return null;
+  const cleaned = firstLine
+    .replace(/^(?:title|topic|subject|chat title)\s*[:\-]\s*/i, "")
+    .replace(/["'*_#`«»“”‘’]/g, "")
+    .replace(/[.!?:;,]+$/, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (cleaned.length < 2 || cleaned.length > 60) return null;
+  if (/^(new conversation|untitled)$/i.test(cleaned)) return null;
+  return cleaned;
+}

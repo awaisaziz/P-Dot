@@ -14,15 +14,23 @@ coverage/
 *.tsbuildinfo
 next-env.d.ts
 
+# Docker and VM deployment state
+.env.docker
+deploy/.env
+deploy/data/
+
 # Local deployment and test artifacts
 .open-next/
 .wrangler/
 .dev.vars
 playwright-report/
 test-results/
+tests/evals/reports/eval-report-*.md
 *.log
 
 # Editor and operating system files
 .DS_Store
 Thumbs.db
 .idea/
+*.swp
+*.swo

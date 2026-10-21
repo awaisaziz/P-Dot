@@ -1,5 +1,6 @@
 import { kindFromStatus, ProviderError } from "@/server/providers/errors";
 import type { CompletionChunk, ModelCallRequest, ModelProvider, TokenUsage } from "@/server/providers/model";
+import type { ToolCall } from "@/server/assistant/tools";
 
 /**
  * What one call to a fake model does. Times use setTimeout, so tests can run
@@ -13,8 +14,8 @@ export interface FakeBehavior {
   retryAfterMs?: number;
   /** Fail with this error after the delay. */
   error?: ProviderError;
-  /** Chunks after the delay. `reasoning` sends a reasoning marker. */
-  chunks?: { text?: string; reasoning?: boolean; delayMs?: number; error?: ProviderError }[];
+  /** Chunks after the delay. `reasoning` sends a reasoning marker; `toolCalls` a tool request. */
+  chunks?: { text?: string; reasoning?: boolean; toolCalls?: ToolCall[]; delayMs?: number; error?: ProviderError }[];
   /** Usage in the finish chunk (null: none). Default 10 in, 5 out. */
   usage?: TokenUsage | null;
   /** Never finish (for deadline tests). */
@@ -84,6 +85,7 @@ export class FakeProvider implements ModelProvider {
           if (chunk.error) throw chunk.error;
           if (chunk.reasoning) yield { type: "reasoning" as const };
           if (chunk.text !== undefined) yield { type: "text" as const, text: chunk.text };
+          if (chunk.toolCalls) yield { type: "tool_calls" as const, calls: chunk.toolCalls };
         }
         if (behavior.hang) await wait(10 ** 9, signal);
         yield {

@@ -1,0 +1,21 @@
+# HTTPS for the app. Caddy gets and renews the certificate for DOMAIN on its own
+# (ports 80 and 443 must reach this machine). Only the app is published; the
+# database and the Supabase services stay on the private Docker network.
+{
+	email {$ACME_EMAIL}
+}
+
+{$DOMAIN} {
+	encode zstd gzip
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		-Server
+	}
+	reverse_proxy app:3000 {
+		# Chat replies stream for up to a few minutes.
+		flush_interval -1
+		transport http {
+			read_timeout 300s
+		}
+	}
+}

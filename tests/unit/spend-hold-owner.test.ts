@@ -1,5 +1,5 @@
 import { readdirSync, readFileSync } from "node:fs";
-import { join, relative } from "node:path";
+import { join, relative, sep } from "node:path";
 import { describe, expect, it } from "vitest";
 
 // One owner for "worst-case hold for a Nebius call". A second copy of the hold
@@ -27,7 +27,8 @@ function withoutComments(source: string): string {
 
 describe("Nebius hold owner", () => {
   it("is the only file that uses the hold ceiling or prices a hold", () => {
-    const files = sourceFiles(join(ROOT, "src")).map((path) => relative(ROOT, path));
+    // Forward slashes on every platform, so the owner paths above match on Windows too.
+    const files = sourceFiles(join(ROOT, "src")).map((path) => relative(ROOT, path).split(sep).join("/"));
     expect(files).toContain(OWNER);
 
     expect(files).toContain(PRICING);

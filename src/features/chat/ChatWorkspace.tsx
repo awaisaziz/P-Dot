@@ -8,6 +8,7 @@ import { useApprovalMode } from "@/features/actions/approval-mode";
 import { notifyActionsChanged } from "@/features/actions/events";
 import { useAutoApprovals } from "@/features/actions/useAutoApprovals";
 import { useProposals } from "@/features/actions/useProposals";
+import { summarizeConversation } from "@/features/memory/api";
 import { useMemorySuggestions, type MemorySuggestion } from "@/features/memory/useMemorySuggestions";
 import { MAX_MESSAGE_CHARS } from "@/lib/limits";
 import type {
@@ -108,6 +109,8 @@ export function ChatWorkspace({
 
   const router = useRouter();
   const abortRef = useRef<AbortController | null>(null);
+  // The messages shown, for the summary trigger (read in event handlers, never in the render).
+  const messagesRef = useRef<UiMessage[]>([]);
   const loadSeq = useRef(0);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const endRef = useRef<HTMLDivElement>(null);
@@ -180,7 +183,22 @@ export function ChatWorkspace({
     endRef.current?.scrollIntoView({ block: "end" });
   }, [messages, streaming]);
 
+  useEffect(() => {
+    messagesRef.current = messages;
+  }, [messages]);
+
+  /**
+   * Suggests lasting facts from a conversation as "Remember this?" cards
+   * (decision 0009). Best effort and in the background: when the user leaves
+   * a conversation with an exchange in it, and every few replies.
+   */
+  function suggestMemoriesFrom(conversationId: string | null, count: number) {
+    if (!conversationId || count < 2) return;
+    void summarizeConversation(conversationId).catch(() => {});
+  }
+
   function openConversation(id: string) {
+    if (activeId && activeId !== id) suggestMemoriesFrom(activeId, messagesRef.current.length);
     abortRef.current?.abort();
     // Words still being dictated belong to the conversation the user is leaving.
     dictation.cancel();
@@ -195,6 +213,7 @@ export function ChatWorkspace({
   }
 
   function startNewConversation() {
+    suggestMemoriesFrom(activeId, messagesRef.current.length);
     abortRef.current?.abort();
     dictation.cancel();
     loadSeq.current += 1;
@@ -226,6 +245,7 @@ export function ChatWorkspace({
     const tempId = `pending-${Date.now()}`;
     let accepted = false;
     let finished = false;
+    let conversationId = activeId;
 
     const restoreDraft = () => {
       if (action !== "send") return;
@@ -262,6 +282,7 @@ export function ChatWorkspace({
         switch (event.type) {
           case "start":
             accepted = true;
+            conversationId = event.conversation.id;
             if (sentInAuto) setAutoTurns((turns) => new Set(turns).add(event.userMessage.id));
             // "Think harder" applies to one message, so a forgotten switch does not keep using the heavy tier.
             setEffort((current) => effortAfterAccept(sentEffort, { effort: current, version: effortVersion.current }));
@@ -293,14 +314,26 @@ export function ChatWorkspace({
               tier: current?.tier,
             }));
             break;
-          case "done":
+          case "thought":
+            // What P-Dot said before using a tool was its plan, not the reply: show it as status.
+            setStreaming((current) => ({ text: "", search: current?.search ?? null, tier: current?.tier }));
+            setStatus(event.text);
+            break;
+          case "title":
+            setConversations((list) => list.map((c) => (c.id === conversationId ? { ...c, title: event.title } : c)));
+            break;
+          case "done": {
             finished = true;
+            const count = messagesRef.current.length + 1;
             setMessages((current) => [...current, { ...event.message, truncated: event.truncated }]);
             setStreaming(null);
             setSuggestionsKey((key) => key + 1);
             notifyActionsChanged();
             setStatus("Reply complete.");
+            // Every sixth message, suggest what is worth remembering so far.
+            if (count >= 6 && count % 6 === 0) suggestMemoriesFrom(conversationId, count);
             break;
+          }
           case "error":
             finished = true;
             setStreaming(null);

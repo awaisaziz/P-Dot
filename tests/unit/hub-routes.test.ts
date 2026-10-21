@@ -61,6 +61,7 @@ beforeEach(() => {
   vi.mocked(createTaskRepository).mockReturnValue(tasks);
   vi.mocked(getAssistantConfig).mockReturnValue({
     nebius: { apiKey: "k", baseUrl: "https://nebius.test/v1" },
+    ollama: { baseUrl: "http://127.0.0.1:11434/v1", embeddingModel: null },
     routing: testRouting(),
     tavily: null,
     quota: { requestsPerWindow: 30, windowSeconds: 3600 },

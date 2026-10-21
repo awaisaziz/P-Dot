@@ -19,6 +19,10 @@ export const ALLOWED_NAMES = new Set([
   "NEBIUS_HEAVY_MAX_OUTPUT_TOKENS",
   "NEBIUS_HEAVY_THINKING_BUDGET",
   "NEBIUS_HEDGE_AFTER_MS",
+  "NEBIUS_FIRST_TOKEN_TIMEOUT_MS",
+  // Local simulation only (an Ollama server address and model name; not secrets).
+  "OLLAMA_BASE_URL",
+  "OLLAMA_EMBEDDING_MODEL",
   "CHAT_REQUESTS_PER_WINDOW",
   "CHAT_WINDOW_SECONDS",
   "NEBIUS_DAILY_CAP_USD",

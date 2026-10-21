@@ -59,17 +59,24 @@ export interface RoutingSettings {
   heavyThinkingBudgetTokens: number;
   /** 0 turns hedging off. */
   hedgeAfterMs: number;
+  /**
+   * Replaces every tier's first-token timeout. For local models (Ollama), which
+   * load into memory on the first call and answer more slowly than Nebius.
+   * Undefined keeps the production numbers below.
+   */
+  firstTokenTimeoutMs?: number;
 }
 
 export function buildRoutingConfig(settings: RoutingSettings): RoutingConfig {
   const hedge = settings.hedgeAfterMs > 0 ? settings.hedgeAfterMs : null;
+  const firstToken = (production: number) => settings.firstTokenTimeoutMs ?? production;
   return {
     fast: {
       tier: "fast",
       models: settings.chains.fast,
       maxOutputTokens: settings.maxOutputTokens,
       thinkingBudgetTokens: 0,
-      firstTokenTimeoutMs: 5_000,
+      firstTokenTimeoutMs: firstToken(5_000),
       deadlineMs: 60_000,
       hedgeAfterMs: hedge,
       triesPerModel: 2,
@@ -80,7 +87,7 @@ export function buildRoutingConfig(settings: RoutingSettings): RoutingConfig {
       models: settings.chains.standard,
       maxOutputTokens: settings.standardMaxOutputTokens,
       thinkingBudgetTokens: 0,
-      firstTokenTimeoutMs: 10_000,
+      firstTokenTimeoutMs: firstToken(10_000),
       deadlineMs: 90_000,
       hedgeAfterMs: null,
       triesPerModel: 2,
@@ -92,7 +99,7 @@ export function buildRoutingConfig(settings: RoutingSettings): RoutingConfig {
       maxOutputTokens: settings.heavyMaxOutputTokens,
       thinkingBudgetTokens: settings.heavyThinkingBudgetTokens,
       // With reasoning on, reasoning tokens count as the first token.
-      firstTokenTimeoutMs: 15_000,
+      firstTokenTimeoutMs: firstToken(15_000),
       deadlineMs: 150_000,
       hedgeAfterMs: null,
       triesPerModel: 2,
@@ -103,7 +110,7 @@ export function buildRoutingConfig(settings: RoutingSettings): RoutingConfig {
       models: settings.chains.vision,
       maxOutputTokens: settings.maxOutputTokens,
       thinkingBudgetTokens: 0,
-      firstTokenTimeoutMs: 10_000,
+      firstTokenTimeoutMs: firstToken(10_000),
       deadlineMs: 60_000,
       hedgeAfterMs: null,
       triesPerModel: 2,

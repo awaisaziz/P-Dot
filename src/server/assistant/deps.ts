@@ -2,12 +2,16 @@ import "server-only";
 import { getCloudflareContext } from "@opennextjs/cloudflare";
 import type { AuthContext } from "@/server/auth/session";
 import type { AssistantConfig } from "@/server/config";
+import { createActionProposalRepository } from "@/server/db/action-proposals";
 import { createContextRecordRepository } from "@/server/db/context-records";
 import { createConversationRepository } from "@/server/db/conversations";
+import { createMemoryRepository } from "@/server/db/memories";
 import { createQuotaGate } from "@/server/db/quota";
-import { createSpendGuard } from "@/server/db/spend";
+import { createRetrievalRepository } from "@/server/db/retrieval";
+import { createSpendGuard, type SpendGuard } from "@/server/db/spend";
 import { logEvent } from "@/server/log";
-import { createNebiusProvider } from "@/server/providers/model";
+import { createNebiusProvider, createOllamaProvider, createRoutedProvider, type ModelProvider } from "@/server/providers/model";
+import { LOCAL_MODEL_PREFIX } from "@/server/providers/nebius/pricing";
 import { searchWeb } from "@/server/providers/tavily/client";
 import { BREAKER_DEFAULTS, createCircuitBreaker } from "./breaker";
 import { createBudgetedEmbedder, type Embedder } from "./embed";
@@ -23,19 +27,37 @@ const breaker = createCircuitBreaker(BREAKER_DEFAULTS);
 /** Wires the assistant service to real providers for one authenticated request. */
 export function createAssistantDeps(auth: AuthContext, config: AssistantConfig): AssistantDeps {
   const tavily = config.tavily;
+  const spend = createSpendGuard(auth.supabase, config.spend);
   return {
     repo: createConversationRepository(auth.supabase),
     quota: createQuotaGate(auth.supabase, config.quota.requestsPerWindow, config.quota.windowSeconds),
-    spend: createSpendGuard(auth.supabase, config.spend),
+    spend,
     routing: config.routing,
     search: tavily ? (query, signal) => searchWeb(tavily, query, { signal }) : null,
-    provider: createNebiusProvider(config.nebius),
+    provider: createModelProvider(config),
     breaker,
     now: () => new Date(),
     log: logEvent,
     waitUntil,
     contextRecords: createContextRecordRepository(auth.supabase),
+    memories: createMemoryRepository(auth.supabase),
+    retrieval: createRetrievalRepository(auth.supabase),
+    actionProposals: createActionProposalRepository(auth.supabase),
+    embedder: createEmbedder(config, spend),
+    smartTitles: true,
   };
+}
+
+/**
+ * Nebius for every model, and the local Ollama for a model with the `ollama/`
+ * prefix. Both go through the same client, so a local run exercises the
+ * production path.
+ */
+export function createModelProvider(config: AssistantConfig): ModelProvider {
+  return createRoutedProvider({
+    nebius: createNebiusProvider(config.nebius),
+    ollama: createOllamaProvider(config.ollama),
+  });
 }
 
 /**
@@ -56,8 +78,20 @@ export function waitUntil(work: Promise<unknown>): void {
  * (the route answers 503 not_configured) when Nebius is not configured.
  */
 export function createEmbedderForRequest(auth: AuthContext, config: AssistantConfig): Embedder {
+  return createEmbedder(config, createSpendGuard(auth.supabase, config.spend));
+}
+
+/** Nebius embeddings, or the local Ollama model when OLLAMA_EMBEDDING_MODEL is set. */
+function createEmbedder(config: AssistantConfig, spend: SpendGuard): Embedder {
+  if (config.ollama.embeddingModel) {
+    return createBudgetedEmbedder({
+      settings: { apiKey: "ollama", baseUrl: config.ollama.baseUrl, model: config.ollama.embeddingModel, provider: "ollama" },
+      priceModel: `${LOCAL_MODEL_PREFIX}${config.ollama.embeddingModel}`,
+      spend,
+    });
+  }
   return createBudgetedEmbedder({
     settings: { apiKey: config.nebius.apiKey, baseUrl: config.nebius.baseUrl },
-    spend: createSpendGuard(auth.supabase, config.spend),
+    spend,
   });
 }
