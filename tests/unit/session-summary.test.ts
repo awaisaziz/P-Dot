@@ -85,7 +85,6 @@ describe("summarizeSession", () => {
     const result = await summarizeSession(deps, {
       userId: ALICE,
       requestId: "req-sum",
-      mode: "personal",
       transcript,
       sourceMessageId: "11111111-1111-4111-8111-111111111111",
       signal: new AbortController().signal,
@@ -96,6 +95,7 @@ describe("summarizeSession", () => {
     expect(prompts[0]![1]!.content).toContain("<transcript>");
     expect(prompts[0]![1]!.content).toContain("allergic to peanuts");
     expect(memories.memories.map((m) => m.content)).toEqual(["Lives in Toronto", "Prefers TypeScript strict mode", "Allergic to peanuts"]);
+    // Saved with WORKSPACE_MODE (decision 0014).
     expect(memories.memories[0]).toMatchObject({
       userId: ALICE,
       mode: "personal",
@@ -117,7 +117,6 @@ describe("summarizeSession", () => {
     const result = await summarizeSession(deps, {
       userId: ALICE,
       requestId: "req-sum",
-      mode: "personal",
       transcript,
       sourceMessageId: null,
       signal: new AbortController().signal,
@@ -132,7 +131,6 @@ describe("summarizeSession", () => {
     const nothing = await summarizeSession(greeting.deps, {
       userId: ALICE,
       requestId: "r",
-      mode: "work",
       transcript: [{ role: "user", content: "hi" }, { role: "assistant", content: "Hello!" }],
       sourceMessageId: null,
       signal: new AbortController().signal,
@@ -149,7 +147,6 @@ describe("summarizeSession", () => {
     const failed = await summarizeSession(failing.deps, {
       userId: ALICE,
       requestId: "r",
-      mode: "work",
       transcript,
       sourceMessageId: null,
       signal: new AbortController().signal,

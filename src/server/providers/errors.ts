@@ -1,6 +1,6 @@
 import "server-only";
 
-export type ProviderName = "nebius" | "ollama" | "tavily";
+export type ProviderName = "nebius" | "ollama" | "tavily" | "google";
 
 export type ProviderErrorKind =
   | "timeout"

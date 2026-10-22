@@ -90,16 +90,13 @@ const row = {
 };
 
 describe("document repository", () => {
-  it("lists one mode for one user, newest first, without selecting embeddings", async () => {
+  it("lists every document of one user whatever its mode, newest first, without selecting embeddings", async () => {
     const { supabase, calls } = fakeSupabase({ data: [row], error: null });
-    const docs = await createDocumentRepository(supabase).listDocuments(ALICE, "work", 100);
+    const docs = await createDocumentRepository(supabase).listDocuments(ALICE, 100);
 
     expect(calls[0]).toMatchObject({ table: "documents", op: "select", limit: 100 });
     expect(calls[0]!.columns).not.toContain("embedding");
-    expect(calls[0]!.filters).toEqual([
-      ["user_id", ALICE],
-      ["mode", "work"],
-    ]);
+    expect(calls[0]!.filters).toEqual([["user_id", ALICE]]);
     expect(docs).toEqual([
       {
         id: DOC,
@@ -112,6 +109,15 @@ describe("document repository", () => {
       },
     ]);
     expect(JSON.stringify(docs)).not.toContain("embedding");
+  });
+
+  it("filters by mode only when one is given", async () => {
+    const { supabase, calls } = fakeSupabase({ data: [row], error: null });
+    await createDocumentRepository(supabase).listDocuments(ALICE, 100, "work");
+    expect(calls[0]!.filters).toEqual([
+      ["user_id", ALICE],
+      ["mode", "work"],
+    ]);
   });
 
   it("creates a document as processing for the given user", async () => {
@@ -195,7 +201,7 @@ describe("document repository", () => {
   it("throws a repository error without database details", async () => {
     const { supabase } = fakeSupabase({ data: null, error: { message: 'duplicate key "secret text"' } });
     const error = await createDocumentRepository(supabase)
-      .listDocuments(ALICE, "work", 10)
+      .listDocuments(ALICE, 10)
       .catch((e: unknown) => e);
     expect(error).toBeInstanceOf(Error);
     expect((error as Error).message).toBe("Database operation failed: listDocuments");

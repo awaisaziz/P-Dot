@@ -6,15 +6,15 @@ import { LocalTime, useNow } from "@/components/ui/LocalTime";
 import { fromLocalInputValue } from "@/features/actions/format";
 import { ApiError, errorMessage } from "@/lib/api-client";
 import { MAX_REMINDER_TITLE_CHARS } from "@/lib/limits";
-import type { Mode, ReminderDTO } from "@/types/api";
+import type { ReminderDTO } from "@/types/api";
 import { createReminder, deleteReminder, updateReminder } from "./api";
 
 function byDue(a: ReminderDTO, b: ReminderDTO) {
   return a.dueAt.localeCompare(b.dueAt);
 }
 
-/** Reminders for one mode: add, mark done, delete. P-Dot does not deliver them yet. */
-export function RemindersPanel({ mode, initialReminders }: { mode: Mode; initialReminders: ReminderDTO[] }) {
+/** Reminders: add, mark done, delete. P-Dot does not deliver them yet. */
+export function RemindersPanel({ initialReminders }: { initialReminders: ReminderDTO[] }) {
   const router = useRouter();
   const [reminders, setReminders] = useState(initialReminders);
   const [title, setTitle] = useState("");
@@ -41,7 +41,7 @@ export function RemindersPanel({ mode, initialReminders }: { mode: Mode; initial
     setAdding(true);
     setError(null);
     try {
-      const reminder = await createReminder(mode, text, dueAt);
+      const reminder = await createReminder(text, dueAt);
       setReminders((list) => [...list, reminder].sort(byDue));
       setTitle("");
       setDue("");
@@ -155,10 +155,7 @@ export function RemindersPanel({ mode, initialReminders }: { mode: Mode; initial
         <h2 id="reminders-heading">Reminders</h2>
         <span className="status-pill status-executed">Live</span>
       </div>
-      <p className="muted small">
-        Reminders are saved, but P-Dot cannot notify you when one is due yet; delivery needs a scheduler and push, which
-        are still being built. Check this list instead.
-      </p>
+      <p className="muted small">Saved here; P-Dot cannot notify you when one is due yet.</p>
 
       {scheduled.length === 0 && <p className="muted">No upcoming reminders.</p>}
       <ul className="reminder-list">{scheduled.map(item)}</ul>

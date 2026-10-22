@@ -4,7 +4,8 @@ import {
   MAX_DOCUMENT_BODY_BYTES,
   STALE_DOCUMENT_SETTLE_LIMIT,
 } from "@/lib/limits";
-import { createDocumentSchema, modeSchema } from "@/lib/schemas";
+import { WORKSPACE_MODE } from "@/lib/mode";
+import { createDocumentSchema } from "@/lib/schemas";
 import { budgetRefusal, NebiusHoldTooLargeError } from "@/server/assistant/spend";
 import { chunkText } from "@/server/assistant/chunk";
 import { createEmbedderForRequest } from "@/server/assistant/deps";
@@ -18,32 +19,26 @@ import { logEvent } from "@/server/log";
 import { ProviderError } from "@/server/providers/errors";
 
 /**
- * GET /api/documents?mode=personal|work. Lists the signed-in user's documents for one mode.
- * First it settles the user's stale "processing" documents (an upload that stopped
+ * GET /api/documents. Lists every document of the signed-in user; a `?mode=`
+ * from an older tab is ignored (decision 0014). First it settles the user's stale "processing" documents (an upload that stopped
  * before its final status write). If that fails, the list is still returned.
  */
 export async function GET(request: Request): Promise<Response> {
   return withAuthenticatedRoute(request, { route: "documents.list" }, async ({ auth, requestId }) => {
-    const mode = modeSchema.safeParse(new URL(request.url).searchParams.get("mode"));
-    if (!mode.success) return errorResponse(400, "invalid_request", "Choose a mode: personal or work.", requestId);
-
     const repository = createDocumentRepository(auth.supabase);
     const staleBefore = new Date(Date.now() - DOCUMENT_PROCESSING_STALE_MS);
     await repository.settleStaleDocuments(auth.userId, staleBefore, STALE_DOCUMENT_SETTLE_LIMIT).catch(() => {
       logEvent("warn", "documents_settle_failed", { requestId, route: "documents.list" });
     });
 
-    const documents = await repository.listDocuments(
-      auth.userId,
-      mode.data,
-      DOCUMENT_LIST_LIMIT,
-    );
+    const documents = await repository.listDocuments(auth.userId, DOCUMENT_LIST_LIMIT);
     return jsonResponse({ documents }, requestId);
   });
 }
 
 /**
- * POST /api/documents uploads plain text or Markdown. Body: { mode, title, mediaType, text }.
+ * POST /api/documents uploads plain text or Markdown. Body: { title, mediaType, text, mode? };
+ * a sent mode is ignored and the document gets WORKSPACE_MODE (decision 0014).
  * The text is split into chunks, embedded and stored. The document is "ready"
  * only when every step worked; otherwise it is "failed".
  */
@@ -55,13 +50,18 @@ export async function POST(request: Request): Promise<Response> {
     if (!parsed.success) {
       return errorResponse(400, "invalid_request", parsed.error.issues[0]?.message ?? "Invalid request.", requestId);
     }
-    const { mode, title, mediaType, text } = parsed.data;
+    const { title, mediaType, text } = parsed.data;
 
     // Read the config first: a missing key must fail before any document exists.
     const config = getAssistantConfig();
     const embedder = createEmbedderForRequest(auth, config);
     const documents = createDocumentRepository(auth.supabase);
-    const document = await documents.createDocument(auth.userId, { mode, title, mediaType, charCount: text.length });
+    const document = await documents.createDocument(auth.userId, {
+      mode: WORKSPACE_MODE,
+      title,
+      mediaType,
+      charCount: text.length,
+    });
 
     try {
       const chunks = chunkText(text);

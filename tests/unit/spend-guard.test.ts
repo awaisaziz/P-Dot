@@ -1,17 +1,31 @@
 import { describe, expect, it, vi } from "vitest";
-import { HISTORY_CHAR_BUDGET, HISTORY_MESSAGE_LIMIT, MAX_ASSISTANT_CHARS } from "@/lib/limits";
+import {
+  HISTORY_CHAR_BUDGET,
+  HISTORY_MESSAGE_LIMIT,
+  MAX_ASSISTANT_CHARS,
+  MAX_MEMORY_CHARS,
+  RETRIEVAL_MATCH_COUNT,
+} from "@/lib/limits";
 import { MAX_SAFE_URL_CHARS } from "@/lib/safe-url";
 import { ConfigError } from "@/lib/supabase-config";
+import { buildContextWindow } from "@/server/assistant/context";
+import { buildPromptMessages } from "@/server/assistant/prompt";
 import { prepareChatTurn, streamChatTurn, type AssistantDeps } from "@/server/assistant/service";
 import {
   budgetRefusal,
+  CONNECTOR_RESULT_MAX_BYTES,
   MAX_NEBIUS_HOLD_MICRO_USD,
   nebiusHoldMicroUsd,
   nebiusSettleMicroUsd,
   NebiusHoldTooLargeError,
+  nextHopFits,
   SEARCH_BUDGET_MESSAGE,
+  SEARCH_RESULTS_MAX_BYTES,
+  WORKFLOW_RESULT_MAX_BYTES,
 } from "@/server/assistant/spend";
-import { buildRoutingConfig, ULTRA } from "@/server/assistant/tiers";
+import { buildRoutingConfig, SUPER as SUPER_MODEL, ULTRA } from "@/server/assistant/tiers";
+import { ALL_TOOLS, MAX_TOOL_HOPS, TOOLS_MAX_BYTES, type ToolCall } from "@/server/assistant/tools";
+import type { ChatMessage } from "@/server/providers/nebius/client";
 import { toNdjsonStream } from "@/server/http/ndjson";
 import { ProviderError } from "@/server/providers/errors";
 import { streamChatCompletion } from "@/server/providers/nebius/client";
@@ -126,7 +140,8 @@ describe("chat hold ceiling", () => {
   });
 
   it("holds at least the final prompt's cost for the largest turn with worst-case search results", async () => {
-    // Work mode, 40 history messages and a new message that fill the history budget with 3-byte characters.
+    // 40 history messages and a new message that fill the history budget with 3-byte characters.
+    // The conversation keeps a stored "work" mode, which no longer changes the prompt (decision 0014).
     const repo = new MemoryRepository();
     const conversation = await repo.createConversation(ALICE, "Long", "work");
     for (let i = 0; i < HISTORY_MESSAGE_LIMIT; i += 1) {
@@ -164,6 +179,85 @@ describe("chat hold ceiling", () => {
     const held = spend.reservations.find((r) => r.provider === "nebius")!.held;
     expect(held).toBeGreaterThanOrEqual(nebiusHoldMicroUsd(ULTRA, final, 8192));
     expect(held).toBeLessThan(150_000);
+  });
+});
+
+describe("workflow and connector result byte budgets (decision 0015)", () => {
+  /** The largest history the context window keeps: 40 messages and a new one, 3-byte characters. */
+  function fullHistoryPrompt(): ChatMessage[] {
+    const history = Array.from({ length: HISTORY_MESSAGE_LIMIT }, (_, i) => ({
+      role: i % 2 === 0 ? ("user" as const) : ("assistant" as const),
+      content: "中".repeat(585),
+    }));
+    history.push({ role: "user", content: "中".repeat(HISTORY_CHAR_BUDGET - HISTORY_MESSAGE_LIMIT * 585) });
+    return buildPromptMessages({
+      history: buildContextWindow(history, HISTORY_CHAR_BUDGET),
+      webSearch: "failed",
+      results: [],
+      now: new Date(Date.UTC(2026, 9, 21, 12)),
+      tools: ALL_TOOLS,
+      toolHops: MAX_TOOL_HOPS - 1,
+      timeZone: "America/Argentina/ComodRivadavia",
+    });
+  }
+
+  /** What the first prompt can add on top of its own text: search results and memories, at their bounds. */
+  const FIRST_PROMPT_EXTRA = SEARCH_RESULTS_MAX_BYTES + RETRIEVAL_MATCH_COUNT * (MAX_MEMORY_CHARS * 4 + 64) + 512;
+
+  function call(id: string, name: string, args: Record<string, unknown>): ToolCall {
+    return { id, type: "function", function: { name, arguments: JSON.stringify(args) } };
+  }
+
+  /** The next hop after one workflow call and three connector calls, each result at its byte cap. */
+  function afterFourResults(): ChatMessage[] {
+    const messages = fullHistoryPrompt();
+    const calls = [
+      call("call_0", "search_flights", {
+        origin: "中".repeat(80),
+        destination: "中".repeat(80),
+        depart_date: "2026-11-12",
+        return_date: "2026-11-19",
+        passengers: 9,
+      }),
+      call("call_1", "calendar_list_events", {
+        time_min: "2026-11-12T00:00:00+00:00",
+        time_max: "2026-11-19T23:59:59+00:00",
+        query: "中".repeat(200),
+      }),
+      call("call_2", "drive_search_files", { query: "中".repeat(200), kind: "slides" }),
+      call("call_3", "drive_read_file", { file_id: "a".repeat(128) }),
+    ];
+    messages.push({ role: "assistant", content: "中".repeat(200), tool_calls: calls });
+    messages.push({ role: "tool", tool_call_id: "call_0", name: "search_flights", content: "x".repeat(WORKFLOW_RESULT_MAX_BYTES) });
+    for (const id of ["call_1", "call_2", "call_3"]) {
+      messages.push({ role: "tool", tool_call_id: id, name: "connector", content: "x".repeat(CONNECTOR_RESULT_MAX_BYTES) });
+    }
+    return messages;
+  }
+
+  it("keeps the next hop under the ceiling with one workflow and three connector results, heavy tier, Ultra at 8,192 tokens", () => {
+    const heavy = [ULTRA, SUPER_MODEL];
+    const messages = afterFourResults();
+    // The next hop may still offer tools, so their definitions count too.
+    const extra = FIRST_PROMPT_EXTRA + TOOLS_MAX_BYTES;
+    const hold = nebiusHoldMicroUsd(ULTRA, messages, 8192, extra);
+    expect(hold).toBeLessThanOrEqual(MAX_NEBIUS_HOLD_MICRO_USD);
+    // Some room is left for what this bound does not model (a longer plan sentence before the calls).
+    expect(MAX_NEBIUS_HOLD_MICRO_USD - hold).toBeGreaterThanOrEqual(4_096);
+    expect(nextHopFits(heavy, messages, 8192, extra)).toBe(true);
+    // Ultra is the most expensive model of the chain, so its hold is the one that must fit.
+    expect(hold).toBeGreaterThan(nebiusHoldMicroUsd(SUPER_MODEL, messages, 8192, extra));
+  });
+
+  it("answers false instead of throwing when the next hop would pass the ceiling", () => {
+    const messages = afterFourResults();
+    const extra = FIRST_PROMPT_EXTRA + TOOLS_MAX_BYTES;
+    // A second workflow result does not fit (one workflow per reply).
+    expect(nextHopFits([ULTRA], messages, 8192, extra + 2 * WORKFLOW_RESULT_MAX_BYTES)).toBe(false);
+    expect(nextHopFits([SUPER_MODEL, ULTRA], [{ role: "user", content: "x".repeat(249_921) }], 0, 0)).toBe(false);
+    expect(nextHopFits([ULTRA], [{ role: "user", content: "x".repeat(249_920) }], 0, 0)).toBe(true);
+    // A model without a price is still a configuration error.
+    expect(() => nextHopFits(["moonshotai/Kimi-K3"], [{ role: "user", content: "hi" }], 64, 0)).toThrow(ConfigError);
   });
 });
 

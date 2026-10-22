@@ -107,6 +107,34 @@ Each lesson below comes from a real defect. A reviewer found it or a measurement
 - **Numbers (2026-10-20):** the largest valid chat turn (Work mode, 41 messages of 3-byte characters that fill the 24,000-character history budget, search on, Ultra, 8,192 output tokens) holds 138,233 micro-dollars. With worst-case search results its final prompt needs 130,279. A test through the real Tavily adapter checks both and keeps the hold under 150,000.
 - **Sources:** PR #2 commit 1945dda and fix eab3260; PR #6 commit 0dce68a; [PR #14](https://github.com/PATELOM925/P-Dot/pull/14).
 
+### 12. A tool-only stream looked dead to the executor
+
+- **What happened:** a design review on 2026-10-21 found it before any code shipped. With reasoning off and `tool_choice` naming one function, a model sends only `delta.tool_calls`. The client added these silently and yielded nothing until `[DONE]`. The executor's first-token timer saw no token, so the fast tier's hedge fired at 1.5 s on every forced call (a second paid hold), and after 5 s the attempt was stopped as a timeout and counted against the breaker. A workflow's extraction call takes longer than 5 s.
+- **Fix:** the client yields a text-less progress chunk the first time each tool call arrives; the executor counts it as the first token and commits only on the finished `tool_calls` chunk, so rule 4 holds. The extraction runs on its own plan (from the standard tier, hedge off, 2,048 output tokens).
+- **Rule:** any stream that can produce no visible text must still tell the executor it is alive. Test it with fake timers past the first-token timeout.
+- **Sources:** the repository critique of decision 0015 (2026-10-21); `tests/unit/executor-nebius.test.ts` (a 6 s tool-only stream finishes on the first model with one hold and no hedge; the test fails when the progress chunk is removed).
+
+### 13. Workflow credits are reserved before the first search
+
+- **What happened:** the first workflow design reserved one Tavily credit per search as each search started. Parallel searches could be partly refused after others had already been paid for, and the SQL guard accepts at most 2 credits per reservation.
+- **Fix:** a workflow reserves every credit it needs, one reservation per call, before any Tavily call; if one is refused, the granted ones settle to 0 and the step says "search limit reached". `tavilySearchCredits` and `tavilyExtractCredits` in `spend.ts` are the only owners of credit prices; they throw above 2 credits or 5 URLs, and a source-reading test fails when another file passes a number literal to `reserve("tavily", …)`.
+- **Rule:** reserve all of a multi-call step first, then call. Never reserve inside a parallel fan-out.
+- **Numbers (2026-10-21):** a flight check costs 2 search credits and 1 extract credit; research costs up to 4. With the default per-user cap of 10 credits a day, that is 3 flight checks (the toggle search is skipped for a flight request). Tavily's published prices: basic search 1 credit, advanced 2, extract 1 credit per 5 pages at basic depth.
+- **Sources:** [Tavily credits](https://docs.tavily.com/documentation/api-credits); `tests/unit/tavily-credits.test.ts`; `tests/unit/workflows-flights.test.ts`.
+
+### 14. Tool results need a byte budget before they run
+
+- **What happened:** each hop's hold is computed from the messages so far, and nothing bounded tool-result bytes. Four large Drive reads over two hops could push a later hop past the $0.25 ceiling, so the reply failed with `NebiusHoldTooLargeError` after the earlier hops and Tavily credits were paid.
+- **Fix:** each workflow result is capped at 24,576 bytes and each connector result at 12,288 bytes (`WORKFLOW_RESULT_MAX_BYTES`, `CONNECTOR_RESULT_MAX_BYTES`). Before a workflow or connector tool runs, `nextHopFits` checks that the next hop's worst-case hold still fits for the most expensive model of the tier; if not, the tool answers "not run" without calling Tavily or Google. One workflow runs per reply.
+- **Numbers (2026-10-21):** a full 3-byte history with worst-case search and memory bounds, all tool definitions, one workflow result and three connector results at their caps holds 243,991 micro-dollars on the next heavy hop (Ultra, 8,192 output tokens), 6,009 under the ceiling. A 32 KB workflow cap measured 252,183, which is why the cap is 24 KB.
+- **Sources:** the repository critique of decisions 0015 and 0016 (2026-10-21); `tests/unit/spend-guard.test.ts`.
+
+### 15. Google's invalid_grant is final
+
+- **What happened:** found in design and tests, not in production. Google answers `invalid_grant` when a refresh token was revoked, expired (7 days while the Cloud project is in Testing) or replaced. Retrying cannot help.
+- **Fix:** `invalid_grant` marks the grant `needs_reconnect` and the tool answers "Google needs to be reconnected on the Connectors page." Nothing retries silently. A decrypt failure or an unknown key version changes nothing, so a Preview with the wrong key cannot damage production rows.
+- **Sources:** [Google OAuth 2.0, refresh token expiration](https://developers.google.com/identity/protocols/oauth2#expiration); `tests/unit/connector-runner.test.ts`.
+
 ## Checklists
 
 **Add or change a model**
@@ -130,6 +158,8 @@ Each lesson below comes from a real defect. A reviewer found it or a measurement
 
 ## Not verified yet
 
+- Whether Nemotron models on Token Factory honour a named `tool_choice` and stay inside the extraction schema (decision 0015 uses a forced tool call because no Nemotron model carries the JSON-mode tag). Measure on `nvidia/Nemotron-3_5-Lightning` and `nemotron-3-super-120b-a12b` before public launch.
+- Tavily keyless caps and error shapes; real Google Calendar and Drive responses (the connector is tested against fakes built from Google's documentation).
 - Real Nebius error shapes for quota, rate limit and model-not-found inside a stream.
 - A real disconnect in the deployed Worker and the `waitUntil` settle.
 - Many requests at the same time against the live database.

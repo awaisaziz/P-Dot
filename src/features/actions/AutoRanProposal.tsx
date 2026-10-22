@@ -45,7 +45,7 @@ export function AutoRanProposal({ proposal, running }: { proposal: ActionProposa
       setState("undone");
     } catch (err) {
       setState("idle");
-      setError(errorMessage(err, "Could not undo this. Remove it from the list instead."));
+      setError(errorMessage(err, "Could not undo; remove it from the list instead."));
     }
   }
 
@@ -67,14 +67,14 @@ export function AutoRanProposal({ proposal, running }: { proposal: ActionProposa
         <span className="hint">
           {KIND_LABELS[proposal.payload.kind]} ·{" "}
           {running
-            ? "Auto mode is doing this now."
+            ? "Auto is doing this now."
             : state === "undone"
-              ? "Undone. It was removed."
+              ? "Undone and removed."
               : done
-                ? "P-Dot did this on its own because Auto mode is on."
+                ? "Done on its own because Auto is on."
                 : unconfirmed
                   ? UNCONFIRMED_HINT
-                  : "Auto mode tried this, but it could not be completed."}
+                  : "Auto tried this, but it could not be completed."}
           {done && state !== "undone" && (
             <>
               {" "}

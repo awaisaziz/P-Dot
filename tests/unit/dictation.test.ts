@@ -42,7 +42,7 @@ describe("dictation errors", () => {
 
   it("explains a blocked microphone and unknown errors", () => {
     expect(dictationErrorMessage("not-allowed")).toMatch(/Allow the microphone for this site/);
-    expect(dictationErrorMessage("something-new")).toBe("Dictation stopped unexpectedly. Try again.");
+    expect(dictationErrorMessage("something-new")).toBe("Dictation stopped unexpectedly; try again.");
   });
 });
 

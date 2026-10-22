@@ -1,10 +1,12 @@
 import { z } from "zod";
 import { MAX_CHAT_BODY_BYTES } from "@/lib/limits";
+import { WORKSPACE_MODE } from "@/lib/mode";
 import { actionDecisionSchema } from "@/lib/schemas";
 import { waitUntil } from "@/server/assistant/deps";
 import type { AuthContext } from "@/server/auth/session";
 import { createActionProposalRepository } from "@/server/db/action-proposals";
 import { createMemoryRepository } from "@/server/db/memories";
+import { workspacePayloadFor } from "@/server/db/workspace";
 import { readJsonBody } from "@/server/http/request";
 import { errorResponse, jsonResponse } from "@/server/http/responses";
 import { withAuthenticatedRoute } from "@/server/http/route";
@@ -27,7 +29,9 @@ const actionNotFound = (requestId: string) => errorResponse(404, "not_found", "A
  * transaction: it claims the proposal, runs an approved action as the user,
  * stores the outcome and writes the action log. A proposal can be decided
  * once: a second decision gets 409 and runs nothing. An edited payload must
- * keep the same kind.
+ * keep the same kind. What runs always has WORKSPACE_MODE: an edited payload
+ * gets it before validation, and a plain approval of a proposal saved with
+ * another mode sends the stored payload with WORKSPACE_MODE.
  */
 export async function POST(request: Request, context: Context): Promise<Response> {
   return withAuthenticatedRoute(request, { route: "actions.decide", sameOrigin: true }, async ({ auth, requestId }) => {
@@ -36,13 +40,17 @@ export async function POST(request: Request, context: Context): Promise<Response
 
     const body = await readJsonBody(request, MAX_CHAT_BODY_BYTES);
     if (!body.ok) return errorResponse(body.status, body.code, body.message, requestId);
-    const parsed = actionDecisionSchema.safeParse(body.value);
+    const parsed = actionDecisionSchema.safeParse(withWorkspaceMode(body.value));
     if (!parsed.success) {
       return errorResponse(400, "invalid_request", parsed.error.issues[0]?.message ?? "Invalid request.", requestId);
     }
     const { decision, payload: edited } = parsed.data;
+    // A plain approval of an older proposal saved in Work mode also runs with WORKSPACE_MODE.
+    const rewritten =
+      decision === "approve" && !edited ? await workspacePayloadFor(auth.supabase, auth.userId, id.data) : null;
 
-    const { outcome, proposal, row } = await createActionProposalRepository(auth.supabase).decide(id.data, decision, edited);
+    const repository = createActionProposalRepository(auth.supabase);
+    const { outcome, proposal, row } = await repository.decide(id.data, decision, edited ?? rewritten ?? undefined);
     // A committed decision on an older row whose payload cannot be shown answers with its ID and status only.
     const decided = proposal ?? row;
 
@@ -73,6 +81,20 @@ export async function POST(request: Request, context: Context): Promise<Response
         return jsonResponse(decided, requestId);
     }
   });
+}
+
+/**
+ * An edited payload always gets WORKSPACE_MODE (decision 0014): a mode the
+ * client sends, or leaves out, is replaced before validation. Anything that is
+ * not an object with an object payload is left for the schema to reject.
+ */
+function withWorkspaceMode(value: unknown): unknown {
+  if (!isPlainObject(value) || !isPlainObject(value.payload)) return value;
+  return { ...value, payload: { ...value.payload, mode: WORKSPACE_MODE } };
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 /**

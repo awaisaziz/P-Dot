@@ -6,7 +6,7 @@ import { fetchActions } from "./api";
 import { onActionsChanged } from "./events";
 
 /**
- * How many proposals wait for approval, in both modes, shown on the Today
+ * How many proposals wait for approval, shown on the Today
  * link. It reloads after a decision or a chat reply, and when the user comes
  * back to the tab. Nothing is shown while the count is unknown or zero.
  */

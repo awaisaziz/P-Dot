@@ -22,6 +22,12 @@ Confirmed by the user:
 - Repository instructions, an initial directory structure, and this PRD.
 - Backend and minimal frontend implementation (requested 2026-10-14).
 - Supabase for authentication and database, and streamed assistant replies (decided 2026-10-14; see `docs/decisions/`).
+- Requested 2026-10-21 (built on `awais/agentic-workspace`, each in a proposed decision for review):
+  - Agentic workflows that search the web and must not hallucinate, starting with flight search ([decision 0015](decisions/0015-grounded-workflows.md)).
+  - Every explanation of how something works condensed to one line, and a nicer interface.
+  - One workspace instead of Personal and Work tabs ([decision 0014](decisions/0014-one-workspace.md)).
+  - Connectors the user can browse and connect, starting with Google Calendar, Docs, Slides and the rest of Google ([decision 0016](decisions/0016-google-connectors.md)).
+  - Inference on Nebius Token Factory and web search on Tavily, which Nebius owns since 2026-02-19 (still a separate key and bill).
 
 Proposed assumptions requiring review before implementation:
 
@@ -112,6 +118,8 @@ Acceptance: User A cannot access or modify user B's data, including through dire
 
 ## 8. Out of scope for MVP
 
+Amended 2026-10-21 (proposed, decisions 0014-0016): **reading** a connected Google account (Calendar and Drive files, including Docs, Slides and Sheets) is in scope while the user's Google chip is on, and multi-step web workflows (flight checks, verified research) are in scope. Fares are shown as quoted on travel pages with their source and time; P-Dot never books or pays. Changing anything in an outside account is still out of scope.
+
 - Autonomous actions, email sending, calendar edits, purchases, or other external account mutations.
 - Background reminders and scheduled jobs.
 - Voice, file uploads, multimodal input, and document indexing.
@@ -155,6 +163,7 @@ Still open (provisional implementation defaults are listed in [decision 0003](de
 - Per-user request limits, total service budget, and initial audience size.
 - Hosting region and any data-residency requirements.
 - Whether practical planning remains chat-only or later grows into a task/reminder feature.
+- From 2026-10-21: a flight-data provider for bookable fares (SerpApi or Duffel, decision 0015); the Google scope before public launch (`drive.readonly` with a CASA assessment, or `drive.file` with the Picker, decision 0016); Zero Data Retention on the Nebius account before connector content reaches other users; whether connector reads without a card (the visible Google chip, decision 0011 amendment) are acceptable.
 
 ## 12. Release acceptance
 

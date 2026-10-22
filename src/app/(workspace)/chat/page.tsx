@@ -1,16 +1,15 @@
 import type { Metadata } from "next";
 import { ChatWorkspace } from "@/features/chat/ChatWorkspace";
-import { getMode } from "@/server/mode";
+import { draftFromQuery } from "@/features/chat/starters";
 
 export const metadata: Metadata = { title: "Chat · P-Dot" };
 
 interface ChatPageProps {
-  searchParams: Promise<{ c?: string | string[] }>;
+  searchParams: Promise<{ c?: string | string[]; q?: string | string[] }>;
 }
 
 export default async function ChatPage({ searchParams }: ChatPageProps) {
-  const { c } = await searchParams;
-  const mode = await getMode();
-  // Keyed by mode so switching Personal/Work starts a fresh workspace for that side.
-  return <ChatWorkspace key={mode} mode={mode} initialConversationId={typeof c === "string" ? c : null} />;
+  const { c, q } = await searchParams;
+  // `q` (a starter from Today) goes into the message box once; the user sends it.
+  return <ChatWorkspace initialConversationId={typeof c === "string" ? c : null} initialDraft={draftFromQuery(q)} />;
 }

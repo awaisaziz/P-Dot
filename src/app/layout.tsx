@@ -3,6 +3,8 @@ import { DM_Sans } from "next/font/google";
 import Script from "next/script";
 import { EARLY_INSTALL_SCRIPT, PwaSetup } from "@/features/pwa/PwaSetup";
 import "./globals.css";
+import "./styles/chat.css";
+import "./styles/pages.css";
 
 const dmSans = DM_Sans({
   subsets: ["latin"],

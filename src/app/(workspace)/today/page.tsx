@@ -1,67 +1,82 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { ApprovalList } from "@/features/actions/ApprovalList";
+import { starterHref, todayStarters } from "@/features/chat/starters";
+import { ComingUp } from "@/features/today/ComingUp";
+import { comingUpVisible } from "@/features/today/coming-up";
 import { TaskList } from "@/features/today/TaskList";
-import { MODE_LABELS } from "@/lib/mode";
+import { WorkspaceMergedNotice } from "@/features/today/WorkspaceMergedNotice";
 import { ACTION_LIST_LIMIT, TASK_LIST_LIMIT } from "@/lib/limits";
 import { requireAuth } from "@/server/auth/session";
+import { getConnectorConfig, isConnectorUserAllowed, type ConnectorConfig } from "@/server/connectors/config";
 import { createActionProposalRepository } from "@/server/db/action-proposals";
 import { createTaskRepository } from "@/server/db/tasks";
-import { getMode } from "@/server/mode";
+import { countWorkModeRows } from "@/server/db/workspace";
+import { logEvent } from "@/server/log";
+import type { ConnectorsResponse } from "@/types/connectors";
 
 export const metadata: Metadata = { title: "Today · P-Dot" };
 
-const SCOPE: Record<"personal" | "work", string> = {
-  personal: "family, meals, gifts, errands and everyday choices. Work topics stay in Work mode.",
-  work: "meetings, email, code, tasks and deadlines only. Personal topics stay in Personal mode.",
-};
+/** Whether Google can be used here, as GET /api/connectors would say. A malformed setting reads as "not set up". */
+function googleHere(userId: string): Pick<ConnectorsResponse, "available" | "allowed"> {
+  let config: ConnectorConfig | null;
+  try {
+    config = getConnectorConfig();
+  } catch {
+    logEvent("warn", "today_page_config_invalid", { route: "today.page" });
+    config = null;
+  }
+  return { available: config !== null, allowed: config !== null && isConnectorUserAllowed(config, userId) };
+}
 
 export default async function TodayPage() {
   const auth = await requireAuth("/today");
-  const mode = await getMode();
-  const [tasks, proposals] = await Promise.all([
-    createTaskRepository(auth.supabase).listTasks(auth.userId, mode, TASK_LIST_LIMIT),
+  const [tasks, proposals, workModeRows] = await Promise.all([
+    createTaskRepository(auth.supabase).listTasks(auth.userId, TASK_LIST_LIMIT),
     createActionProposalRepository(auth.supabase).listProposals(auth.userId, undefined, ACTION_LIST_LIMIT),
+    // Never rejects: an error counts as 0 and hides the notice.
+    countWorkModeRows(auth.supabase, auth.userId),
   ]);
+  // Previews and users not on the allow list cannot connect, so they get no panel with a Connect link.
+  const showComingUp = comingUpVisible(googleHere(auth.userId));
+  // Things to try in chat. Each opens the chat with its prompt in the message box; the user sends it.
+  // The calendar one follows the same check, so it never leads where Google cannot be used.
+  const starters = todayStarters(showComingUp);
 
   return (
     <main className="page page-wide stack">
       <div className="page-title">
-        <h1>{mode === "work" ? "Your workday" : "Your day"}</h1>
+        <div className="page-intro">
+          <h1>Your day</h1>
+          <p className="muted">Your calendar, to-dos and approvals in one place.</p>
+        </div>
         <Link className="button button-primary" href="/chat">
           Ask P-Dot
         </Link>
       </div>
 
-      <p className={`scope-note scope-note-${mode}`}>
-        <strong>{MODE_LABELS[mode]} mode:</strong> {SCOPE[mode]}
-      </p>
+      <WorkspaceMergedNotice count={workModeRows} />
 
       <div className="two-column">
         <div className="stack">
-          <section className="panel" aria-labelledby="brief-heading">
-            <h2 id="brief-heading">Daily brief</h2>
-            <p className="muted">
-              No brief yet. A daily brief is built from your email and calendar, and connectors are not available yet.
-            </p>
-            <Link href="/connectors">See planned connectors</Link>
-          </section>
-
-          <TaskList key={mode} mode={mode} initialTasks={tasks} />
+          {showComingUp && <ComingUp />}
+          <TaskList initialTasks={tasks} />
         </div>
 
         <aside className="stack">
-          <ApprovalList key={mode} mode={mode} initial={proposals} />
+          <ApprovalList initial={proposals} />
           <section className="panel" aria-labelledby="start-heading">
             <h2 id="start-heading">Start something</h2>
-            <p className="muted">
-              {mode === "work"
-                ? "Draft an update, plan your week, or work through a problem."
-                : "Plan dinner, shortlist a gift, or sort out the weekend."}
-            </p>
-            <Link className="button" href="/chat">
-              Open chat
-            </Link>
+            <ul className="today-starter-list">
+              {starters.map((starter) => (
+                <li key={starter.title}>
+                  <Link className="today-starter" href={starterHref(starter.prompt)}>
+                    <span className="today-starter-title">{starter.title}</span>
+                    <span className="today-starter-example">{starter.example}</span>
+                  </Link>
+                </li>
+              ))}
+            </ul>
           </section>
         </aside>
       </div>

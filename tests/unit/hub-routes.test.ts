@@ -116,26 +116,39 @@ describe("PATCH /api/conversations/:id (rename)", () => {
   });
 });
 
-describe("GET /api/conversations?mode=", () => {
-  it("lists only the requested mode and rejects unknown modes", async () => {
+describe("GET /api/conversations", () => {
+  it("lists every conversation whatever its mode, and ignores any ?mode= from an older tab", async () => {
     await repo.createConversation(ALICE, "Home stuff", "personal");
     await repo.createConversation(ALICE, "Sprint plan", "work");
     signInAs(ALICE);
-    const work = await (await listRoute.GET(plainRequest("GET", "http://localhost/api/conversations?mode=work"))).json();
-    expect(work.conversations.map((c: { title: string }) => c.title)).toEqual(["Sprint plan"]);
-    const all = await (await listRoute.GET(plainRequest("GET", "http://localhost/api/conversations"))).json();
-    expect(all.conversations).toHaveLength(2);
-    expect((await listRoute.GET(plainRequest("GET", "http://localhost/api/conversations?mode=other"))).status).toBe(400);
+    for (const url of [
+      "http://localhost/api/conversations",
+      "http://localhost/api/conversations?mode=work",
+      "http://localhost/api/conversations?mode=other",
+    ]) {
+      const response = await listRoute.GET(plainRequest("GET", url));
+      expect(response.status).toBe(200);
+      const body = await response.json();
+      expect(body.conversations.map((c: { title: string }) => c.title)).toEqual(["Sprint plan", "Home stuff"]);
+    }
   });
 });
 
 describe("POST /api/chat mode", () => {
-  it("creates new conversations in the requested mode", async () => {
+  it("creates new conversations in WORKSPACE_MODE without a mode", async () => {
+    signInAs(ALICE);
+    const response = await chatRoute.POST(jsonRequest("POST", { action: "send", message: "hi", webSearch: false }));
+    expect(response.status).toBe(200);
+    await collect(readChatStream(response.body!));
+    expect(repo.conversations[0]).toMatchObject({ mode: "personal", userId: ALICE });
+  });
+
+  it("ignores a mode an older tab sends (decision 0014)", async () => {
     signInAs(ALICE);
     const response = await chatRoute.POST(jsonRequest("POST", { action: "send", mode: "work", message: "hi", webSearch: false }));
     expect(response.status).toBe(200);
     await collect(readChatStream(response.body!));
-    expect(repo.conversations[0]).toMatchObject({ mode: "work", userId: ALICE });
+    expect(repo.conversations[0]).toMatchObject({ mode: "personal", userId: ALICE });
   });
 
   it("rejects an unknown mode", async () => {
@@ -148,22 +161,29 @@ describe("POST /api/chat mode", () => {
 describe("/api/tasks", () => {
   it("requires a session", async () => {
     signInAs(null);
-    expect((await tasksRoute.GET(plainRequest("GET", "http://localhost/api/tasks?mode=work"))).status).toBe(401);
-    expect((await tasksRoute.POST(jsonRequest("POST", { mode: "work", title: "x" }))).status).toBe(401);
+    expect((await tasksRoute.GET(plainRequest("GET", "http://localhost/api/tasks"))).status).toBe(401);
+    expect((await tasksRoute.POST(jsonRequest("POST", { title: "x" }))).status).toBe(401);
     expect((await taskItemRoute.PATCH(jsonRequest("PATCH", { done: true }), params(ALICE))).status).toBe(401);
     expect((await taskItemRoute.DELETE(plainRequest("DELETE"), params(ALICE))).status).toBe(401);
   });
 
-  it("creates, lists per mode, updates and deletes the owner's tasks", async () => {
+  it("creates, lists every row whatever its mode, updates and deletes the owner's tasks", async () => {
     signInAs(ALICE);
-    const created = await tasksRoute.POST(jsonRequest("POST", { mode: "work", title: "  Review PR  " }));
+    const created = await tasksRoute.POST(jsonRequest("POST", { title: "  Review PR  " }));
     expect(created.status).toBe(201);
     const task = await created.json();
-    expect(task).toMatchObject({ title: "Review PR", mode: "work", done: false });
-    await tasksRoute.POST(jsonRequest("POST", { mode: "personal", title: "Call mum" }));
+    // Without a mode the task gets WORKSPACE_MODE (decision 0014).
+    expect(task).toMatchObject({ title: "Review PR", mode: "personal", done: false });
+    // An older tab may still send a mode; it is accepted and ignored.
+    const older = await tasksRoute.POST(jsonRequest("POST", { mode: "work", title: "Call mum" }));
+    expect(older.status).toBe(201);
+    expect(await older.json()).toMatchObject({ title: "Call mum", mode: "personal" });
+    expect(tasks.tasks.map((t) => t.mode)).toEqual(["personal", "personal"]);
 
-    const work = await (await tasksRoute.GET(plainRequest("GET", "http://localhost/api/tasks?mode=work"))).json();
-    expect(work.tasks.map((t: { title: string }) => t.title)).toEqual(["Review PR"]);
+    for (const url of ["http://localhost/api/tasks", "http://localhost/api/tasks?mode=personal"]) {
+      const list = await (await tasksRoute.GET(plainRequest("GET", url))).json();
+      expect(list.tasks.map((t: { title: string }) => t.title)).toEqual(["Review PR", "Call mum"]);
+    }
 
     const updated = await taskItemRoute.PATCH(jsonRequest("PATCH", { done: true }), params(task.id));
     expect(await updated.json()).toMatchObject({ done: true });
@@ -175,7 +195,7 @@ describe("/api/tasks", () => {
   it("does not let one user read or change another user's tasks", async () => {
     const theirs = await tasks.createTask(ALICE, "work", "Secret plan");
     signInAs(BOB);
-    const list = await (await tasksRoute.GET(plainRequest("GET", "http://localhost/api/tasks?mode=work"))).json();
+    const list = await (await tasksRoute.GET(plainRequest("GET", "http://localhost/api/tasks"))).json();
     expect(list.tasks).toEqual([]);
     expect((await taskItemRoute.PATCH(jsonRequest("PATCH", { done: true }), params(theirs.id))).status).toBe(404);
     expect((await taskItemRoute.DELETE(plainRequest("DELETE"), params(theirs.id))).status).toBe(404);
@@ -192,12 +212,12 @@ describe("/api/tasks", () => {
     expect((await tasksRoute.POST(jsonRequest("POST", body))).status).toBe(400);
   });
 
-  it("rejects an empty update, a bad mode filter, and cross-origin writes", async () => {
+  it("rejects an empty update and cross-origin writes, and ignores an unknown mode filter", async () => {
     const task = await tasks.createTask(ALICE, "work", "x");
     signInAs(ALICE);
     expect((await taskItemRoute.PATCH(jsonRequest("PATCH", {}), params(task.id))).status).toBe(400);
-    expect((await tasksRoute.GET(plainRequest("GET", "http://localhost/api/tasks?mode=nope"))).status).toBe(400);
-    const cross = await tasksRoute.POST(jsonRequest("POST", { mode: "work", title: "x" }, { origin: "https://evil.example" }));
+    expect((await tasksRoute.GET(plainRequest("GET", "http://localhost/api/tasks?mode=nope"))).status).toBe(200);
+    const cross = await tasksRoute.POST(jsonRequest("POST", { title: "x" }, { origin: "https://evil.example" }));
     expect(cross.status).toBe(403);
   });
 });

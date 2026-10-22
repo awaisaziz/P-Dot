@@ -25,7 +25,8 @@ export interface ReminderChanges {
 }
 
 export interface ReminderRepository {
-  listReminders(userId: string, mode: Mode, limit: number): Promise<ReminderDTO[]>;
+  /** Soonest first. `mode`, when given, keeps only the rows saved with it (decision 0014: the app passes none). */
+  listReminders(userId: string, limit: number, mode?: Mode): Promise<ReminderDTO[]>;
   /** Returns null when no reminder with that ID belongs to the user. */
   getReminder(userId: string, reminderId: string): Promise<ReminderDTO | null>;
   createReminder(userId: string, reminder: NewReminder): Promise<ReminderDTO>;
@@ -75,14 +76,10 @@ export function createReminderRepository(supabase: SupabaseClient): ReminderRepo
   };
 
   return {
-    async listReminders(userId, mode, limit) {
-      const { data, error } = await supabase
-        .from("reminders")
-        .select(REMINDER_COLUMNS)
-        .eq("user_id", userId)
-        .eq("mode", mode)
-        .order("due_at", { ascending: true })
-        .limit(limit);
+    async listReminders(userId, limit, mode) {
+      let query = supabase.from("reminders").select(REMINDER_COLUMNS).eq("user_id", userId);
+      if (mode) query = query.eq("mode", mode);
+      const { data, error } = await query.order("due_at", { ascending: true }).limit(limit);
       if (error) throw new RepositoryError("listReminders");
       return (data ?? []).map(toReminder);
     },

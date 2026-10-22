@@ -73,7 +73,6 @@ async function runSingleEval(
         webSearch: "off",
         results: [],
         now: new Date(),
-        mode: "personal",
         tools,
         toolHops: 1,
       });

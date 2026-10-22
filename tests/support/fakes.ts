@@ -24,7 +24,16 @@ import { actionPayloadSchema, actionSummarySchema } from "@/lib/schemas";
 import type { TaskRepository } from "@/server/db/tasks";
 import type { ContextRecordRepository, NewContextRecord } from "@/server/db/context-records";
 import { createBudgetedEmbedder, type Embedder } from "@/server/assistant/embed";
+import type { WorkflowTavily } from "@/server/assistant/workflows/core";
+import type { GoogleConnector } from "@/server/connectors/google/connector";
+import {
+  jsonbTextBytes,
+  MESSAGE_RESULTS_MAX_BYTES,
+  messageResultsPayloadSchema,
+  type MessageResultsRepository,
+} from "@/server/db/message-results";
 import { EMBEDDING_DIMENSIONS } from "@/lib/limits";
+import type { MessageResultsPayload } from "@/types/workflows";
 
 interface StoredConversation extends ConversationSummary {
   userId: string;
@@ -131,9 +140,9 @@ export class MemoryTasks implements TaskRepository {
     return task;
   }
 
-  async listTasks(userId: string, mode: Mode, limit: number) {
+  async listTasks(userId: string, limit: number, mode?: Mode) {
     return this.tasks
-      .filter((t) => t.userId === userId && t.mode === mode)
+      .filter((t) => t.userId === userId && (!mode || t.mode === mode))
       .slice(0, limit)
       .map((t) => this.dto(t));
   }
@@ -177,9 +186,9 @@ export class FakeMemories implements MemoryStore {
     return memory;
   }
 
-  async listMemories(userId: string, mode: Mode, status: MemoryStatus | undefined, limit: number) {
+  async listMemories(userId: string, status: MemoryStatus | undefined, limit: number, mode?: Mode) {
     return this.memories
-      .filter((m) => m.userId === userId && m.mode === mode && (!status || m.status === status))
+      .filter((m) => m.userId === userId && (!mode || m.mode === mode) && (!status || m.status === status))
       .slice(-limit)
       .reverse()
       .map((m) => this.dto(m));
@@ -240,14 +249,14 @@ export class FakeMemories implements MemoryStore {
 export class FakeRetrieval implements RetrievalRepository {
   memoryMatches: MemoryMatch[] = [];
   chunkMatches: DocumentChunkMatch[] = [];
-  calls: { kind: "memories" | "chunks"; mode: Mode; count: number }[] = [];
+  calls: { kind: "memories" | "chunks"; mode: Mode | null; count: number }[] = [];
 
-  async matchMemories(_vector: number[], mode: Mode, count: number) {
+  async matchMemories(_vector: number[], mode: Mode | null, count: number) {
     this.calls.push({ kind: "memories", mode, count });
     return this.memoryMatches.slice(0, count);
   }
 
-  async matchDocumentChunks(_vector: number[], mode: Mode, count: number) {
+  async matchDocumentChunks(_vector: number[], mode: Mode | null, count: number) {
     this.calls.push({ kind: "chunks", mode, count });
     return this.chunkMatches.slice(0, count);
   }
@@ -357,6 +366,32 @@ export class FakeContextRecords implements ContextRecordRepository {
 }
 
 /**
+ * In-memory message_results, scoped to the user like RLS, with the real
+ * repository's checks: the strict payload schema, the 32 KB cap, nothing
+ * stored for an empty payload, and one row per message (the primary key).
+ */
+export class FakeMessageResults implements MessageResultsRepository {
+  rows: { userId: string; messageId: string; payload: MessageResultsPayload }[] = [];
+
+  async insertResults(userId: string, messageId: string, payload: MessageResultsPayload) {
+    const parsed = messageResultsPayloadSchema.safeParse(payload);
+    if (!parsed.success) throw new Error("invalid results payload");
+    if (parsed.data.results.length === 0 && parsed.data.steps.length === 0) return;
+    if (jsonbTextBytes(parsed.data) > MESSAGE_RESULTS_MAX_BYTES) throw new Error("results payload too large");
+    if (this.rows.some((row) => row.messageId === messageId)) throw new Error("duplicate key");
+    this.rows.push({ userId, messageId, payload: parsed.data });
+  }
+
+  async listForMessages(userId: string, messageIds: string[]) {
+    return new Map(
+      this.rows
+        .filter((row) => row.userId === userId && messageIds.includes(row.messageId))
+        .map((row) => [row.messageId, row.payload] as const),
+    );
+  }
+}
+
+/**
  * A fake embeddings endpoint: one vector for each input, with token usage.
  * `calls` counts the requests, so a test can prove that no embedding was paid for.
  */
@@ -421,6 +456,11 @@ export interface FakeDepsOptions {
   actionProposals?: FakeProposals;
   embedder?: Embedder;
   smartTitles?: boolean;
+  /** Grounded workflows (decision 0015): Tavily bound to a fake fetch. */
+  workflowTavily?: WorkflowTavily | null;
+  messageResults?: MessageResultsRepository;
+  /** The Google connector for the request (decision 0016). */
+  connector?: () => GoogleConnector | null;
 }
 
 export function fakeDeps(options: FakeDepsOptions = {}) {
@@ -462,6 +502,9 @@ export function fakeDeps(options: FakeDepsOptions = {}) {
     ...(options.actionProposals ? { actionProposals: options.actionProposals } : {}),
     ...(options.embedder ? { embedder: options.embedder } : {}),
     ...(options.smartTitles ? { smartTitles: true } : {}),
+    ...(options.workflowTavily ? { workflowTavily: options.workflowTavily } : {}),
+    ...(options.messageResults ? { messageResults: options.messageResults } : {}),
+    ...(options.connector ? { connector: options.connector } : {}),
     breaker: createCircuitBreaker({ threshold: 3, cooldownMs: 30_000 }),
     random: () => 0,
     now: () => new Date(Date.UTC(2026, 9, 14, 12, 30, 0)),

@@ -1,5 +1,4 @@
 // Display helpers for action proposals and the action log. Pure functions, so they are unit-tested.
-import { MODE_LABELS } from "@/lib/mode";
 import type {
   ActionKind,
   ActionLogEntryDTO,
@@ -7,7 +6,6 @@ import type {
   ActionPayload,
   ActionProposalDTO,
   ActionStatus,
-  Mode,
 } from "@/types/api";
 
 export const KIND_LABELS: Record<ActionKind, string> = {
@@ -30,6 +28,12 @@ export const KIND_RESULT_LINKS: Record<ActionKind, { href: string; label: string
  */
 export const UNCONFIRMED_HINT = "P-Dot did not confirm this action.";
 
+/**
+ * In Auto: why a proposal from a reply that read web pages or Google still
+ * waits. Such a reply is tainted, so Auto runs nothing for it (decision 0015).
+ */
+export const TAINTED_ASK_REASON = "This reply read web pages or your Google data, so it waits for your OK.";
+
 /** True when a proposal is marked done but the database did not confirm it. */
 export function isUnconfirmedDone(proposal: Pick<ActionProposalDTO, "status" | "verified">): boolean {
   return proposal.status === "executed" && proposal.verified !== true;
@@ -47,9 +51,9 @@ export interface PastProposalView {
 // "Approved" rather than "you approved": until the server records who decided (decision 0011),
 // an approval made by Auto mode looks the same as one made with a click.
 const PAST: Record<Exclude<ActionStatus, "proposed">, PastProposalView> = {
-  approved: { label: "Running", pill: "status-approved", note: "Approved. It is still running.", showResult: false },
+  approved: { label: "Running", pill: "status-approved", note: "Approved, still running.", showResult: false },
   executed: { label: "Done", pill: "status-executed", note: "Approved and done.", showResult: true },
-  rejected: { label: "Cancelled", pill: "status-rejected", note: "You cancelled it. Nothing was changed.", showResult: false },
+  rejected: { label: "Cancelled", pill: "status-rejected", note: "Cancelled; nothing changed.", showResult: false },
   failed: { label: "Failed", pill: "status-failed", note: "Approved, but it could not be completed.", showResult: false },
 };
 
@@ -66,56 +70,40 @@ export function pastProposalView(proposal: ActionProposalDTO): PastProposalView 
   return isUnconfirmedDone(proposal) ? UNCONFIRMED_PAST : PAST[proposal.status];
 }
 
-/** The fields that will be used when the action runs, as label/value pairs. Built from the payload, never the summary. */
+/**
+ * The fields that will be used when the action runs, as label/value pairs. Built from the payload, never the summary.
+ * The payload's `mode` is not shown: there is one workspace (decision 0014).
+ */
 export function payloadDetails(payload: ActionPayload, formatDate: (iso: string) => string): [string, string][] {
-  const mode: [string, string] = ["List", MODE_LABELS[payload.mode]];
   switch (payload.kind) {
     case "create_task":
-      return [["Task", payload.title], mode];
+      return [["Task", payload.title]];
     case "create_reminder":
-      return [["Reminder", payload.title], ["Due", formatDate(payload.dueAt)], mode];
+      return [["Reminder", payload.title], ["Due", formatDate(payload.dueAt)]];
     case "save_memory":
-      return [["Memory", payload.content], mode];
+      return [["Memory", payload.content]];
   }
 }
 
 export interface ProposalFilter {
   /** Only proposals from this conversation (chat). */
   conversationId?: string;
-  /** Only proposals whose payload is for this mode (Today). */
-  mode?: Mode;
 }
 
 export function matchesFilter(proposal: ActionProposalDTO, filter: ProposalFilter): boolean {
-  return (
-    (filter.conversationId === undefined || proposal.conversationId === filter.conversationId) &&
-    (filter.mode === undefined || proposal.payload.mode === filter.mode)
-  );
+  return filter.conversationId === undefined || proposal.conversationId === filter.conversationId;
 }
 
 /**
  * What an approval list shows: proposals still waiting, plus the ones decided
- * in this view so their outcome stays visible. Also counts proposals waiting
- * in the other mode, which the Today page mentions.
+ * in this view so their outcome stays visible.
  */
 export function visibleProposals(
   proposals: ActionProposalDTO[],
   filter: ProposalFilter,
   decidedHere: ReadonlySet<string>,
-): { visible: ActionProposalDTO[]; waitingInOtherMode: number } {
-  const visible = proposals.filter(
-    (p) => matchesFilter(p, filter) && (p.status === "proposed" || decidedHere.has(p.id)),
-  );
-  const waitingInOtherMode =
-    filter.mode === undefined
-      ? 0
-      : proposals.filter(
-          (p) =>
-            p.status === "proposed" &&
-            p.payload.mode !== filter.mode &&
-            matchesFilter(p, { conversationId: filter.conversationId }),
-        ).length;
-  return { visible, waitingInOtherMode };
+): ActionProposalDTO[] {
+  return proposals.filter((p) => matchesFilter(p, filter) && (p.status === "proposed" || decidedHere.has(p.id)));
 }
 
 /** The value for an `<input type="datetime-local">`, in the browser's time zone. Empty when the date is invalid. */
@@ -151,6 +139,9 @@ const EVENT_LABELS: Record<ActionLogEvent, string> = {
   reminder_added: "Reminder added",
   reminder_changed: "Reminder changed",
   reminder_deleted: "Reminder deleted",
+  connector_added: "Connected Google",
+  connector_removed: "Disconnected Google",
+  connector_changed: "Google access changed",
 };
 
 const KIND_NOUNS: Record<string, string> = {
@@ -166,6 +157,7 @@ const STATUS_WORDS: Record<string, string> = {
   proposed: "Waiting for approval",
   active: "Active",
   processing: "Processing",
+  needs_reconnect: "Needs reconnecting",
 };
 
 export type LogTone = "neutral" | "success" | "warning" | "danger";
@@ -182,12 +174,14 @@ export function describeLogEntry(entry: ActionLogEntryDTO): LogEntryView {
   const detail = entry.detail;
   const facts: string[] = [];
   if (typeof detail.kind === "string") facts.push(KIND_NOUNS[detail.kind] ?? detail.kind);
-  if (detail.mode === "personal" || detail.mode === "work") facts.push(MODE_LABELS[detail.mode]);
   if (detail.source === "assistant") facts.push("Suggested by P-Dot");
   if (detail.source === "user") facts.push("Added by you");
   if (typeof detail.status === "string") facts.push(STATUS_WORDS[detail.status] ?? detail.status);
   if (typeof detail.chunkCount === "number") {
     facts.push(`${detail.chunkCount} searchable ${detail.chunkCount === 1 ? "part" : "parts"}`);
+  }
+  if (typeof detail.scopeCount === "number") {
+    facts.push(`${detail.scopeCount} ${detail.scopeCount === 1 ? "permission" : "permissions"}`);
   }
   if (detail.edited === true) facts.push("Edited before approval");
   if (typeof detail.error === "string") facts.push("Could not be completed");
@@ -202,7 +196,7 @@ export function describeLogEntry(entry: ActionLogEntryDTO): LogEntryView {
       ? "success"
       : entry.event === "failed" || entry.event === "document_failed"
         ? "danger"
-        : entry.event === "proposed"
+        : entry.event === "proposed" || (entry.event === "connector_changed" && detail.status === "needs_reconnect")
           ? "warning"
           : "neutral";
 

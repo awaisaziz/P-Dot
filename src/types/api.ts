@@ -1,5 +1,6 @@
 // Contracts shared by the browser and the API routes. No secrets or server-only types here.
 import type { Effort, MessageRoute, ModelTier, RouteReason } from "@/lib/routing";
+import type { MessageResult, MessageResultsPayload, WorkflowStep } from "./workflows";
 
 export type { Effort, MessageRoute, ModelTier, RouteReason } from "@/lib/routing";
 
@@ -20,6 +21,11 @@ export interface MessageDTO {
   id: string;
   role: MessageRole;
   content: string;
+  /**
+   * Verified results and the steps that produced them (decisions 0015, 0016).
+   * Only on assistant replies that ran a workflow or a connector; undefined otherwise.
+   */
+  results?: MessageResultsPayload;
   webSearch: WebSearchStatus;
   sources: SourceRef[];
   /** Which model answered and why. Null for user messages and replies saved before routing. */
@@ -74,9 +80,22 @@ export interface ApiErrorBody {
 }
 
 /** Request body for POST /api/chat. */
+/**
+ * Per-message request options. `timeZone` is the browser's IANA zone, so dates
+ * like "Friday" resolve locally. `connectors.google` is the composer's Google
+ * chip: the assistant may read Calendar and Drive only when it is true
+ * (decision 0011, amendment of 2026-10-21).
+ */
+export interface ChatRequestOptions {
+  webSearch: boolean;
+  effort?: Effort;
+  timeZone?: string;
+  connectors?: { google?: boolean };
+}
+
 export type ChatRequest =
-  | { action: "send"; conversationId?: string; mode?: Mode; message: string; webSearch: boolean; effort?: Effort }
-  | { action: "retry"; conversationId: string; webSearch: boolean; effort?: Effort };
+  | ({ action: "send"; conversationId?: string; mode?: Mode; message: string } & ChatRequestOptions)
+  | ({ action: "retry"; conversationId: string } & ChatRequestOptions);
 
 /**
  * POST /api/chat responds with newline-delimited JSON (one event per line) once
@@ -105,9 +124,22 @@ export type ChatStreamEvent =
    * it as a status line and clears the partial reply; nothing of it is saved.
    */
   | { type: "thought"; text: string }
+  /**
+   * One line of what P-Dot is doing (decision 0015). A later event with the
+   * same `step.id` updates that line. Never contains page or account text
+   * beyond names the user's own request produced.
+   */
+  | { type: "step"; step: WorkflowStep }
+  /** A verified result from a workflow or a connector, shown as cards above the reply. */
+  | { type: "result"; result: MessageResult }
   /** The conversation got a title from its first exchange. Sent before `done`. */
   | { type: "title"; title: string }
-  | { type: "done"; message: MessageDTO; truncated: boolean }
+  /**
+   * `autoActions: false` means the reply read a connector or ran a workflow
+   * (it is tainted), so Auto must not run any of its proposals on its own.
+   * Older servers do not send it; treat a missing value as true.
+   */
+  | { type: "done"; message: MessageDTO; truncated: boolean; autoActions?: boolean }
   | { type: "error"; code: ApiErrorCode; message: string; retryable: boolean };
 
 // ---------------------------------------------------------------------------
@@ -194,7 +226,10 @@ export type ActionLogEvent =
   | "document_deleted"
   | "reminder_added"
   | "reminder_changed"
-  | "reminder_deleted";
+  | "reminder_deleted"
+  | "connector_added"
+  | "connector_removed"
+  | "connector_changed";
 
 export interface ActionLogEntryDTO {
   id: string;

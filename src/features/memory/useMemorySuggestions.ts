@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { ApiError } from "@/lib/api-client";
-import type { MemoryDTO, Mode } from "@/types/api";
+import type { MemoryDTO } from "@/types/api";
 import { fetchMemories } from "./api";
 
 export type SuggestionOutcome = "waiting" | "kept" | "dropped";
@@ -15,17 +15,15 @@ export interface MemorySuggestion {
 }
 
 /**
- * Memories P-Dot suggested for one mode (status "proposed"), plus the ones the
+ * Memories P-Dot suggested (status "proposed"), plus the ones the
  * user kept or dropped in this view, so their outcome stays visible after a
  * reload. Reloads when `refreshKey` changes, for example after a chat reply.
  */
 export function useMemorySuggestions({
-  mode,
   refreshKey = 0,
   enabled = true,
   onUnauthorized,
 }: {
-  mode: Mode;
   refreshKey?: string | number;
   enabled?: boolean;
   onUnauthorized?: () => void;
@@ -38,13 +36,13 @@ export function useMemorySuggestions({
   useEffect(() => {
     if (!enabled) return;
     const controller = new AbortController();
-    fetchMemories(mode, "proposed", controller.signal).then(setWaiting, (err: unknown) => {
+    fetchMemories("proposed", controller.signal).then(setWaiting, (err: unknown) => {
       if (controller.signal.aborted) return;
       if (err instanceof ApiError && err.status === 401) onUnauthorized?.();
       // Otherwise the chat shows no suggestions; the Memory page lists them all with its own errors.
     });
     return () => controller.abort();
-  }, [enabled, mode, refreshKey, onUnauthorized]);
+  }, [enabled, refreshKey, onUnauthorized]);
 
   const settle = useCallback((memory: MemoryDTO, outcome: "kept" | "dropped") => {
     setDecided((current) => new Map(current).set(memory.id, { memory, outcome }));

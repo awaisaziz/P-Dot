@@ -32,6 +32,9 @@ const ACTION_LOG_EVENTS = [
   "reminder_added",
   "reminder_changed",
   "reminder_deleted",
+  "connector_added",
+  "connector_removed",
+  "connector_changed",
 ] as const satisfies readonly ActionLogEvent[];
 
 const logRow = z.object({

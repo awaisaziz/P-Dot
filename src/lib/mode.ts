@@ -1,15 +1,8 @@
 import type { Mode } from "@/types/api";
 
-/** Cookie remembering which side (Personal or Work) the user is viewing. */
-export const MODE_COOKIE = "pdot_mode";
-
-export const DEFAULT_MODE: Mode = "personal";
-
-export const MODE_LABELS: Record<Mode, string> = {
-  personal: "Personal",
-  work: "Work",
-};
-
-export function parseMode(value: unknown): Mode {
-  return value === "work" || value === "personal" ? value : DEFAULT_MODE;
-}
+/**
+ * One workspace (decision 0014): the `mode` column stays in the database, but
+ * this is the only value the app writes. Lists show every row whatever mode it
+ * was saved with, and the user never sees a mode.
+ */
+export const WORKSPACE_MODE: Mode = "personal";

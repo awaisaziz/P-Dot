@@ -2,10 +2,10 @@
 
 import { useState } from "react";
 import { MAX_TASK_CHARS } from "@/lib/limits";
-import type { Mode, TaskDTO } from "@/types/api";
+import type { TaskDTO } from "@/types/api";
 import { createTask, deleteTask, updateTask } from "./api";
 
-export function TaskList({ mode, initialTasks }: { mode: Mode; initialTasks: TaskDTO[] }) {
+export function TaskList({ initialTasks }: { initialTasks: TaskDTO[] }) {
   const [tasks, setTasks] = useState(initialTasks);
   // A server refresh (for example after an approved "add a task" action) brings a new list.
   const [shownInitial, setShownInitial] = useState(initialTasks);
@@ -26,7 +26,7 @@ export function TaskList({ mode, initialTasks }: { mode: Mode; initialTasks: Tas
     setAdding(true);
     setError(null);
     try {
-      const task = await createTask(mode, title);
+      const task = await createTask(title);
       setTasks((current) => [...current, task]);
       setDraft("");
     } catch (err) {
@@ -60,7 +60,7 @@ export function TaskList({ mode, initialTasks }: { mode: Mode; initialTasks: Tas
   return (
     <section className="panel" aria-labelledby="tasks-heading">
       <div className="panel-heading">
-        <h2 id="tasks-heading">{mode === "work" ? "Work to-do list" : "To-do list"}</h2>
+        <h2 id="tasks-heading">To-do list</h2>
         <span className="muted small">
           {tasks.length === 0 ? "Nothing yet" : `${doneCount} of ${tasks.length} done`}
         </span>

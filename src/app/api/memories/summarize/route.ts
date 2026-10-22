@@ -43,7 +43,6 @@ export async function POST(request: Request): Promise<Response> {
       {
         userId: auth.userId,
         requestId,
-        mode: conversation.mode,
         transcript: messages.map(({ role, content }) => ({ role, content })),
         sourceMessageId: lastReply?.id ?? null,
         signal: request.signal,

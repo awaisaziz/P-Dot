@@ -17,6 +17,13 @@ function messages(text: string) {
 }
 
 describe("findChangelogErrors", () => {
+  it("accepts a commit link to the awaisaziz/P-Dot fork", () => {
+    const text = changelog(
+      "- **Fork.** Problem: it broke. Resolution: it is fixed. [commit](https://github.com/awaisaziz/P-Dot/commit/0123abc)\n",
+    );
+    expect(messages(text)).toEqual([]);
+  });
+
   it("passes sub-bullet entries, inline entries, nested resolutions and commit links", () => {
     const text = changelog(
       [

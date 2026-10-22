@@ -280,8 +280,8 @@ describe("sessions and origins", () => {
   it("requires a session on every route", async () => {
     signInAs(null);
     const row = seedMemory(ALICE);
-    expect((await listRoute.GET(plainRequest("GET", "http://localhost/api/memories?mode=personal"))).status).toBe(401);
-    expect((await listRoute.POST(jsonRequest("POST", { mode: "personal", content: "x" }))).status).toBe(401);
+    expect((await listRoute.GET(plainRequest("GET", "http://localhost/api/memories"))).status).toBe(401);
+    expect((await listRoute.POST(jsonRequest("POST", { content: "x" }))).status).toBe(401);
     expect((await itemRoute.PATCH(jsonRequest("PATCH", { status: "active" }), params(row.id as string))).status).toBe(401);
     expect((await itemRoute.DELETE(plainRequest("DELETE"), params(row.id as string))).status).toBe(401);
     expect(storedRow(row.id as string)).toBeDefined();
@@ -291,7 +291,7 @@ describe("sessions and origins", () => {
     const row = seedMemory(ALICE);
     signInAs(ALICE);
     const evil = { origin: "https://evil.example" };
-    expect((await listRoute.POST(jsonRequest("POST", { mode: "personal", content: "x" }, evil))).status).toBe(403);
+    expect((await listRoute.POST(jsonRequest("POST", { content: "x" }, evil))).status).toBe(403);
     expect((await itemRoute.PATCH(jsonRequest("PATCH", { content: "x" }, evil), params(row.id as string))).status).toBe(403);
     expect((await itemRoute.DELETE(plainRequest("DELETE", undefined, evil), params(row.id as string))).status).toBe(403);
     expect(db.tables.memories).toHaveLength(1);
@@ -301,33 +301,40 @@ describe("sessions and origins", () => {
 });
 
 describe("GET /api/memories", () => {
-  it("lists one mode, newest first, and filters by status", async () => {
+  it("lists every memory whatever its mode, newest first, and filters by status", async () => {
     signInAs(ALICE);
     const older = seedMemory(ALICE, { content: "older", status: "active" });
     const newer = seedMemory(ALICE, { content: "newer", status: "proposed" });
-    seedMemory(ALICE, { content: "work one", mode: "work" });
+    const work = seedMemory(ALICE, { content: "work one", mode: "work" });
     seedMemory(BOB, { content: "bob's", mode: "personal" });
 
-    const all = await (await listRoute.GET(plainRequest("GET", "http://localhost/api/memories?mode=personal"))).json();
-    expect(all.memories.map((m: { content: string }) => m.content)).toEqual(["newer", "older"]);
-    expect(all.memories[0]).toMatchObject({ id: newer.id, status: "proposed", source: "user", sourceMessageId: null });
+    const all = await (await listRoute.GET(plainRequest("GET", "http://localhost/api/memories"))).json();
+    expect(all.memories.map((m: { content: string }) => m.content)).toEqual(["work one", "newer", "older"]);
+    expect(all.memories[1]).toMatchObject({ id: newer.id, status: "proposed", source: "user", sourceMessageId: null });
 
-    const proposed = await (
-      await listRoute.GET(plainRequest("GET", "http://localhost/api/memories?mode=personal&status=proposed"))
-    ).json();
+    const proposed = await (await listRoute.GET(plainRequest("GET", "http://localhost/api/memories?status=proposed"))).json();
     expect(proposed.memories.map((m: { id: string }) => m.id)).toEqual([newer.id]);
 
-    const active = await (
-      await listRoute.GET(plainRequest("GET", "http://localhost/api/memories?mode=personal&status=active"))
-    ).json();
-    expect(active.memories.map((m: { id: string }) => m.id)).toEqual([older.id]);
+    const active = await (await listRoute.GET(plainRequest("GET", "http://localhost/api/memories?status=active"))).json();
+    expect(active.memories.map((m: { id: string }) => m.id)).toEqual([work.id, older.id]);
   });
 
   it.each([
     ["no mode", "http://localhost/api/memories"],
+    ["a mode from an older tab", "http://localhost/api/memories?mode=work"],
     ["an unknown mode", "http://localhost/api/memories?mode=hobby"],
-    ["an unknown status", "http://localhost/api/memories?mode=work&status=archived"],
-    ["an empty status", "http://localhost/api/memories?mode=work&status="],
+  ])("accepts %s and lists every memory", async (_label, url) => {
+    signInAs(ALICE);
+    seedMemory(ALICE, { content: "home" });
+    seedMemory(ALICE, { content: "office", mode: "work" });
+    const response = await listRoute.GET(plainRequest("GET", url));
+    expect(response.status).toBe(200);
+    expect((await response.json()).memories).toHaveLength(2);
+  });
+
+  it.each([
+    ["an unknown status", "http://localhost/api/memories?status=archived"],
+    ["an empty status", "http://localhost/api/memories?status="],
   ])("answers 400 for %s", async (_label, url) => {
     signInAs(ALICE);
     expect((await listRoute.GET(plainRequest("GET", url))).status).toBe(400);
@@ -337,12 +344,10 @@ describe("GET /api/memories", () => {
 describe("POST /api/memories", () => {
   it("saves a trimmed memory with an embedding and logs memory_added", async () => {
     signInAs(ALICE);
-    const response = await listRoute.POST(
-      jsonRequest("POST", { mode: "work", content: "  Prefers short replies  " }),
-    );
+    const response = await listRoute.POST(jsonRequest("POST", { content: "  Prefers short replies  " }));
     expect(response.status).toBe(201);
     const memory = await response.json();
-    expect(memory).toMatchObject({ mode: "work", content: "Prefers short replies", status: "active", source: "user", sourceMessageId: null });
+    expect(memory).toMatchObject({ mode: "personal", content: "Prefers short replies", status: "active", source: "user", sourceMessageId: null });
 
     expect(embed).toHaveBeenCalledWith(["Prefers short replies"]);
     expect(storedRow(memory.id)).toMatchObject({ embedding: "[0.1,0.2,0.3]", embedding_model: EMBEDDING_MODEL, user_id: ALICE });
@@ -351,10 +356,28 @@ describe("POST /api/memories", () => {
     expect(actionLog()).toHaveLength(0);
   });
 
+  it("accepts a missing mode and stores WORKSPACE_MODE (decision 0014)", async () => {
+    signInAs(ALICE);
+    const response = await listRoute.POST(jsonRequest("POST", { content: "Lives in Leeds" }));
+    expect(response.status).toBe(201);
+    const memory = await response.json();
+    expect(memory.mode).toBe("personal");
+    expect(storedRow(memory.id)).toMatchObject({ mode: "personal", content: "Lives in Leeds" });
+  });
+
+  it("accepts a mode from an older tab and ignores it", async () => {
+    signInAs(ALICE);
+    const response = await listRoute.POST(jsonRequest("POST", { mode: "work", content: "Uses a standing desk" }));
+    expect(response.status).toBe(201);
+    const memory = await response.json();
+    expect(memory.mode).toBe("personal");
+    expect(storedRow(memory.id)).toMatchObject({ mode: "personal", content: "Uses a standing desk" });
+  });
+
   it("still saves with no embedding when the spend guard refuses", async () => {
     signInAs(ALICE);
     embed.mockRejectedValueOnce(new EmbeddingBudgetError("day"));
-    const response = await listRoute.POST(jsonRequest("POST", { mode: "personal", content: "Lives in Leeds" }));
+    const response = await listRoute.POST(jsonRequest("POST", { content: "Lives in Leeds" }));
     expect(response.status).toBe(201);
     const memory = await response.json();
     expect(storedRow(memory.id)).toMatchObject({ embedding: null, embedding_model: null, content: "Lives in Leeds" });
@@ -364,7 +387,7 @@ describe("POST /api/memories", () => {
   it("still saves with no embedding when the provider fails", async () => {
     signInAs(ALICE);
     embed.mockRejectedValueOnce(new ProviderError("nebius", "unavailable"));
-    const response = await listRoute.POST(jsonRequest("POST", { mode: "personal", content: "Lives in Leeds" }));
+    const response = await listRoute.POST(jsonRequest("POST", { content: "Lives in Leeds" }));
     expect(response.status).toBe(201);
     const memory = await response.json();
     expect(storedRow(memory.id)).toMatchObject({ embedding: null, embedding_model: null });
@@ -376,7 +399,7 @@ describe("POST /api/memories", () => {
     vi.mocked(getAssistantConfig).mockImplementationOnce(() => {
       throw new ConfigError(["NEBIUS_API_KEY"]);
     });
-    const response = await listRoute.POST(jsonRequest("POST", { mode: "personal", content: "x" }));
+    const response = await listRoute.POST(jsonRequest("POST", { content: "x" }));
     expect(response.status).toBe(503);
     expect((await response.json()).error.code).toBe("not_configured");
     expect(db.tables.memories).toHaveLength(0);
@@ -386,7 +409,6 @@ describe("POST /api/memories", () => {
     ["blank content", { mode: "personal", content: "   " }],
     ["content over 1,000 characters", { mode: "personal", content: "x".repeat(1001) }],
     ["an unknown mode", { mode: "family", content: "x" }],
-    ["a missing mode", { content: "x" }],
     ["a client-supplied user", { mode: "personal", content: "x", userId: BOB }],
     ["a client-supplied source message", { mode: "personal", content: "x", sourceMessageId: randomUUID() }],
     ["a client-supplied status", { mode: "personal", content: "x", status: "proposed" }],
@@ -429,16 +451,35 @@ describe("PATCH /api/memories/:id", () => {
     expect(storedRow(row.id as string)).toMatchObject({ content: "Likes green tea", embedding: null, embedding_model: null });
   });
 
-  it("does not embed when only the mode or the status changes", async () => {
+  it("does not embed when only the status changes", async () => {
     signInAs(ALICE);
     const row = seedMemory(ALICE, { status: "proposed" });
     const approve = await itemRoute.PATCH(jsonRequest("PATCH", { status: "active" }), params(row.id as string));
     expect(await approve.json()).toMatchObject({ status: "active" });
-    const move = await itemRoute.PATCH(jsonRequest("PATCH", { mode: "work" }), params(row.id as string));
-    expect(await move.json()).toMatchObject({ mode: "work" });
 
     expect(embed).not.toHaveBeenCalled();
-    expect(storedRow(row.id as string)).toMatchObject({ embedding: OLD_VECTOR, status: "active", mode: "work" });
+    expect(storedRow(row.id as string)).toMatchObject({ embedding: OLD_VECTOR, status: "active", mode: "personal" });
+  });
+
+  it("answers 200 with the unchanged memory and writes nothing for a body with only a mode (decision 0014)", async () => {
+    signInAs(ALICE);
+    const row = seedMemory(ALICE, { content: "Likes tea" });
+    const before = db.queries.length;
+    const response = await itemRoute.PATCH(jsonRequest("PATCH", { mode: "work" }), params(row.id as string));
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ id: row.id, mode: "personal", content: "Likes tea" });
+    expect(db.queries.slice(before).some((q) => q.op === "update")).toBe(false);
+    expect(embed).not.toHaveBeenCalled();
+    expect(storedRow(row.id as string)).toMatchObject({ mode: "personal", embedding: OLD_VECTOR });
+  });
+
+  it("ignores a mode sent with a text edit", async () => {
+    signInAs(ALICE);
+    const row = seedMemory(ALICE, { content: "Likes tea" });
+    const response = await itemRoute.PATCH(jsonRequest("PATCH", { content: "Likes green tea", mode: "work" }), params(row.id as string));
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ mode: "personal", content: "Likes green tea" });
+    expect(storedRow(row.id as string)).toMatchObject({ mode: "personal", content: "Likes green tea", embedding: "[0.1,0.2,0.3]" });
   });
 
   it("never puts old text next to a newer text's vector when the text is unchanged", async () => {
@@ -446,7 +487,7 @@ describe("PATCH /api/memories/:id", () => {
     const row = seedMemory(ALICE, { content: "Likes tea" });
     // Another edit saves new text with its vector after this request read the row.
     db.beforeNextUpdate = () => Object.assign(row, { content: "Likes coffee", embedding: "[0.9]" });
-    const response = await itemRoute.PATCH(jsonRequest("PATCH", { content: "Likes tea", mode: "work" }), params(row.id as string));
+    const response = await itemRoute.PATCH(jsonRequest("PATCH", { content: "Likes tea", status: "active" }), params(row.id as string));
     expect(response.status).toBe(409);
     expect((await response.json()).error.code).toBe("conflict");
     expect(storedRow(row.id as string)).toMatchObject({ content: "Likes coffee", embedding: "[0.9]", mode: "personal" });
@@ -597,7 +638,7 @@ describe("memory writes when one write fails", () => {
   async function createScenario(faults: WriteFaults, sweepCase: SweepCase, checkDuplicates?: boolean) {
     const at = describeCase(sweepCase);
     const spend = arm(faults);
-    const send = () => listRoute.POST(jsonRequest("POST", { mode: "personal", content: NEW_TEXT }));
+    const send = () => listRoute.POST(jsonRequest("POST", { content: NEW_TEXT }));
     const first = await send();
     faults.disarm();
     if (first.status !== 201) {
@@ -648,11 +689,11 @@ describe("memory writes when one write fails", () => {
 describe("privacy and scoping", () => {
   it("never returns an embedding in any response", async () => {
     signInAs(ALICE);
-    const created = await listRoute.POST(jsonRequest("POST", { mode: "personal", content: "Likes tea" }));
+    const created = await listRoute.POST(jsonRequest("POST", { content: "Likes tea" }));
     expect(created.status).toBe(201);
     const memory = await created.clone().json();
     const patched = await itemRoute.PATCH(jsonRequest("PATCH", { content: "Likes green tea" }), params(memory.id));
-    const listed = await listRoute.GET(plainRequest("GET", "http://localhost/api/memories?mode=personal"));
+    const listed = await listRoute.GET(plainRequest("GET", "http://localhost/api/memories"));
 
     for (const response of [created, patched, listed]) {
       const text = await response.text();
@@ -664,8 +705,8 @@ describe("privacy and scoping", () => {
   it("never selects the embedding column", async () => {
     signInAs(ALICE);
     seedMemory(ALICE);
-    await listRoute.GET(plainRequest("GET", "http://localhost/api/memories?mode=personal"));
-    const created = await listRoute.POST(jsonRequest("POST", { mode: "personal", content: "x" }));
+    await listRoute.GET(plainRequest("GET", "http://localhost/api/memories"));
+    const created = await listRoute.POST(jsonRequest("POST", { content: "x" }));
     await itemRoute.PATCH(jsonRequest("PATCH", { status: "active" }), params((await created.json()).id));
 
     const memoryReads = db.queries.filter((q) => q.table === "memories" && q.columns !== null);
@@ -676,8 +717,8 @@ describe("privacy and scoping", () => {
   it("scopes every memory query to the signed-in user", async () => {
     signInAs(ALICE);
     const row = seedMemory(ALICE);
-    await listRoute.GET(plainRequest("GET", "http://localhost/api/memories?mode=personal"));
-    await listRoute.POST(jsonRequest("POST", { mode: "personal", content: "x" }));
+    await listRoute.GET(plainRequest("GET", "http://localhost/api/memories"));
+    await listRoute.POST(jsonRequest("POST", { content: "x" }));
     await itemRoute.PATCH(jsonRequest("PATCH", { content: "y" }), params(row.id as string));
     await itemRoute.DELETE(plainRequest("DELETE"), params(row.id as string));
 

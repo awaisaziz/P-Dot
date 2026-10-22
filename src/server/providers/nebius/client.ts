@@ -53,7 +53,11 @@ export interface TokenUsage {
 
 export type CompletionChunk =
   | { type: "text"; text: string }
-  /** The model is reasoning. Carries no text: reasoning is never shown or saved. */
+  /**
+   * Progress without text: the model is reasoning, or a tool call started
+   * arriving. Reasoning is never shown or saved. The executor counts it as the
+   * first token, so a slow tool-only reply is not timed out or hedged.
+   */
   | { type: "reasoning" }
   /** The model asked for tools. Sent once, after every call's arguments arrived. */
   | { type: "tool_calls"; calls: ToolCall[] }
@@ -194,7 +198,8 @@ interface PartialToolCall {
 }
 
 /**
- * Streams a chat completion. Yields text chunks, then any tool calls, then a
+ * Streams a chat completion. Yields text chunks (and text-less `reasoning`
+ * progress chunks, one when each tool call starts), then any tool calls, then a
  * single `finish` chunk. Throws ProviderError on HTTP errors, in-stream
  * errors, timeouts, malformed data, or a stream that ends without completing.
  */
@@ -292,7 +297,8 @@ export async function* streamChatCompletion(
           for (const piece of choice.delta?.tool_calls ?? []) {
             const index = piece.index ?? toolCalls.size;
             const call = toolCalls.get(index) ?? { id: "", name: "", arguments: "" };
-            if (!toolCalls.has(index)) {
+            const started = !toolCalls.has(index);
+            if (started) {
               if (toolCalls.size >= MAX_TOOL_CALLS) throw new ProviderError(provider, "bad_response");
               toolCalls.set(index, call);
             }
@@ -302,6 +308,8 @@ export async function* streamChatCompletion(
               call.arguments += piece.function.arguments;
               if (call.arguments.length > MAX_TOOL_ARGUMENT_CHARS) throw new ProviderError(provider, "bad_response");
             }
+            // A tool call started: the model is answering, even though no text comes.
+            if (started) yield { type: "reasoning" };
           }
           if (choice.finish_reason) finishReason = choice.finish_reason;
         }

@@ -12,7 +12,8 @@ export type SupportedTool =
   | "Vercel"
   | "WhatsApp"
   | "Phone"
-  | "Search";
+  | "Search"
+  | "Drive";
 
 export interface AgentStep {
   title: string;
@@ -37,6 +38,43 @@ export interface UseCase {
 }
 
 export const USE_CASES: readonly UseCase[] = [
+  {
+    id: "flights",
+    tabLabel: "Flight check",
+    icon: "✈️",
+    category: "Travel, checked against sources",
+    task: "Find me a flight from London to New York on 12 Nov",
+    badgeWaiting: "1 step needs you",
+    badgeApproved: "Reminder set ✓",
+    badgeSkipped: "No reminder set",
+    // No Google read here: a flight check runs first, and after it a reply may not search the web, run
+    // another workflow or read Google (decision 0015, Tainted replies). A Google read first would block the check.
+    steps: [
+      {
+        title: "Searched travel pages",
+        tool: "Search",
+        detail: "LHR to JFK on 12 Nov · 9 results, 4 pages read.",
+        state: "done",
+      },
+      {
+        title: "Verified 3 of 5 fares",
+        detail: "Each fare is quoted from its page with the source and time; 2 were dropped.",
+        state: "done",
+      },
+      {
+        title: "Remind you to book",
+        state: "approval",
+        approvalPrompt: "Set a reminder for Friday 9:00 to book once you approve.",
+        approvedDetail: "Reminder saved for Friday at 9:00.",
+        skippedDetail: "No reminder set; the fares stay in the chat.",
+      },
+      {
+        title: "Open the links to book",
+        detail: "Google Flights and Skyscanner links; P-Dot never books or pays.",
+        state: "next",
+      },
+    ],
+  },
   {
     id: "errands",
     tabLabel: "Weekend errands",
@@ -67,7 +105,7 @@ export const USE_CASES: readonly UseCase[] = [
       {
         title: "Ready to call the salon",
         state: "approval",
-        approvalPrompt: "Book Saturday 11:00 by phone. P-Dot only calls after you approve.",
+        approvalPrompt: "Book Saturday 11:00 by phone once you approve.",
         approvedDetail: "Call confirmed! Appointment reserved for Saturday at 11:00 AM.",
         skippedDetail: "Call skipped. Salon booking was not made.",
       },
@@ -104,8 +142,7 @@ export const USE_CASES: readonly UseCase[] = [
       {
         title: "Drafted reply to project partner",
         state: "approval",
-        approvalPrompt:
-          "Send draft reply to Alex: 'Confirming timeline for Q3 release'. P-Dot only sends with your approval.",
+        approvalPrompt: "Send the draft reply to Alex once you approve.",
         approvedDetail: "Email sent to Alex with agreed timeline and deliverables.",
         skippedDetail: "Draft preserved in Gmail Drafts for your manual review.",
       },
@@ -118,48 +155,6 @@ export const USE_CASES: readonly UseCase[] = [
         title: "Delivered morning voice briefing",
         tool: "Telegram",
         detail: "90-second audio summary delivered directly to your chat.",
-        state: "next",
-      },
-    ],
-  },
-  {
-    id: "travel",
-    tabLabel: "Trip booking",
-    icon: "✈️",
-    category: "Travel & reservations",
-    task: "Plan weekend trip to Montreal and reserve travel",
-    badgeWaiting: "1 step needs you",
-    badgeApproved: "Transit booked ✓",
-    badgeSkipped: "Booking skipped",
-    steps: [
-      {
-        title: "Parsed schedule and travel window",
-        tool: "Calendar",
-        detail: "Depart Friday after 5:00 PM, return Sunday before 9:00 PM.",
-        state: "done",
-      },
-      {
-        title: "Researched transit & hotels",
-        tool: "Search",
-        detail: "Found express train #647 ($79) and 2 top boutique hotels near Old Port.",
-        state: "done",
-      },
-      {
-        title: "Built 3-day weekend itinerary",
-        detail: "Generated itinerary with restaurants, museums, and $380 budget breakdown.",
-        state: "done",
-      },
-      {
-        title: "Confirm train ticket reservation",
-        state: "approval",
-        approvalPrompt: "Reserve Friday 5:45 PM train ticket ($79) on saved card. Requires your approval.",
-        approvedDetail: "Ticket confirmed! Booking reference #MTL-9842 saved to receipts.",
-        skippedDetail: "Purchase skipped. Itinerary saved without transit reservation.",
-      },
-      {
-        title: "Sync passes & offline guide",
-        tool: "WhatsApp",
-        detail: "Sent Apple Wallet tickets and offline guide to WhatsApp.",
         state: "next",
       },
     ],
@@ -195,7 +190,7 @@ export const USE_CASES: readonly UseCase[] = [
       {
         title: "Authorize production hotfix deployment",
         state: "approval",
-        approvalPrompt: "Merge PR #142 and promote staging build to production. Requires your approval.",
+        approvalPrompt: "Merge PR #142 and promote it to production once you approve.",
         approvedDetail: "PR #142 merged and redeployed to production. All checks green.",
         skippedDetail: "Deployment paused. PR #142 held for manual engineer review.",
       },
@@ -224,9 +219,9 @@ export const USE_CASES: readonly UseCase[] = [
         state: "done",
       },
       {
-        title: "Pulled weekly progress & shipped features",
-        tool: "GitHub",
-        detail: "3 key epics delivered, 12 PRs merged, zero blocking issues.",
+        title: "Read the planning doc",
+        tool: "Drive",
+        detail: "Q3 plan in Google Docs, first 6,000 characters.",
         state: "done",
       },
       {
@@ -238,7 +233,7 @@ export const USE_CASES: readonly UseCase[] = [
       {
         title: "Distribute pre-read executive summary",
         state: "approval",
-        approvalPrompt: "Send 1-page executive summary to the 4 attendees 30 minutes before call.",
+        approvalPrompt: "Send the 1-page summary to the 4 attendees once you approve.",
         approvedDetail: "Executive brief sent to all attendees with meeting agenda highlights.",
         skippedDetail: "Pre-read was not sent. Saved locally to your private workspace.",
       },
@@ -251,6 +246,12 @@ export const USE_CASES: readonly UseCase[] = [
     ],
   },
 ] as const;
+
+/** Whether a step comes after the case's approval step, so it follows the approve or skip choice. */
+export function isAfterApproval(steps: readonly AgentStep[], index: number): boolean {
+  const approval = steps.findIndex((step) => step.state === "approval");
+  return approval !== -1 && index > approval;
+}
 
 type ApprovalStatus = "waiting" | "approved" | "skipped";
 
@@ -406,7 +407,7 @@ export function DynamicAgentCard() {
         <ol className="agent-steps">
           {currentCase.steps.map((step, index) => {
             const isApprovalStep = step.state === "approval";
-            const isSubsequentStep = index > 3;
+            const isSubsequentStep = isAfterApproval(currentCase.steps, index);
 
             // Compute dynamic step display based on interactive approval state
             let stepStateClass = `agent-step-${step.state}`;
@@ -523,10 +524,7 @@ export function DynamicAgentCard() {
       </div>
 
       <div className="agent-foot">
-        <p className="small muted">
-          Illustrative example of the planned design; automations and connectors are not available yet. AI can make
-          mistakes, so P-Dot will show each step and check with you first.
-        </p>
+        <p className="small muted">Illustrative preview; calls, email sending, messaging and GitHub are not built yet.</p>
       </div>
     </section>
   );

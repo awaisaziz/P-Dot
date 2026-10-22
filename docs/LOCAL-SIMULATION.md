@@ -6,7 +6,8 @@ This guide runs the whole product on one computer with no paid provider: the fro
 | --- | --- | --- |
 | Nebius Token Factory (chat models) | [Ollama](https://ollama.com) with `qwen3-vl:2b-instruct` | A model ID with the `ollama/` prefix in a tier's chain |
 | Nebius embeddings (`Qwen/Qwen3-Embedding-8B`, 1,024 dimensions) | Ollama with `qwen3-embedding:0.6b` (1,024 dimensions) | `OLLAMA_EMBEDDING_MODEL` |
-| Tavily web search | No stand-in: set `TAVILY_API_KEY` to test it, or leave it empty | `TAVILY_API_KEY` |
+| Tavily web search | Tavily itself, through its free keyless access (capped by Tavily), or your own key | `TAVILY_KEYLESS=true` with no key (development only), or `TAVILY_API_KEY` |
+| Google connector | A Google Cloud OAuth client in Testing mode with `http://localhost:3000/api/connectors/google/callback` as a redirect URI | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `CONNECTOR_TOKEN_KEYS`, `CONNECTOR_ALLOWED_USER_IDS` ([DEPLOYMENT.md](DEPLOYMENT.md), one-time setup step 7) |
 | Hosted Supabase | The local Supabase stack (`npm run db:start`) | `NEXT_PUBLIC_SUPABASE_URL` |
 | Cloudflare Worker | `npm run dev`, or the Docker image | — |
 
@@ -23,6 +24,8 @@ A local model with the `ollama/` prefix is priced at zero, so the spend guard ho
   ```
 
   `qwen3-vl:2b-instruct` is small and fast, but it does not call tools through Ollama (checked on 2026-10-21: it answers "I've remembered…" without calling `save_memory`). To see the tool loop (web search, document search, memory suggestions, task and reminder proposals), use a model that does, for example `ollama pull llama3.1:8b` and put `ollama/llama3.1:8b` in the fast tier. The 2B model still exercises streaming, routing, titles, memory retrieval into the prompt and the spend guard.
+
+  The grounded workflows (flight checks and verified research, [decision 0015](decisions/0015-grounded-workflows.md)) need a tool-capable model in the **standard** tier too, because their extraction step runs there. Ollama ignores a named `tool_choice`, so a model that answers in text instead of calling the extraction tool makes that step fail ("Could not read the results"); the workflow then shows no fare rather than an unverified one. Workflow prompts are long (up to 12,000 characters of page text), and Ollama's default context window cuts the start of a long prompt, so start Ollama with a larger window: `OLLAMA_CONTEXT_LENGTH=16384 ollama serve`.
 
 ## 2. Start the database and accounts
 
@@ -57,6 +60,9 @@ OLLAMA_EMBEDDING_MODEL=qwen3-embedding:0.6b
 # embeddings use Nebius. A Tavily key turns on web search (the toggle and the web_search tool).
 NEBIUS_API_KEY=
 TAVILY_API_KEY=
+# Development only: with no Tavily key, use Tavily's free keyless access (capped by Tavily).
+# Ignored when NODE_ENV is production, and a deploy stops if it is set.
+TAVILY_KEYLESS=true
 ```
 
 Rules the configuration enforces:

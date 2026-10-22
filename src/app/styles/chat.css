@@ -1,0 +1,773 @@
+/* Chat workspace: run panel, result cards, composer chips (decisions 0015, 0016). Uses the tokens in globals.css.
+   Loaded after globals.css, so the chat rules here refine the ones there. New tokens are for result cards and
+   step icons only, with dark values below. */
+
+:root {
+  --chat-column: 47.5rem;
+  --result-bg: var(--surface);
+  --result-inner: #f8f8fb;
+  --quote-bg: #f3f2ff;
+  --quote-rule: #a29cf4;
+  --step-running: #4f46e5;
+  --step-done: #1d7a45;
+  --step-partial: #a35f00;
+  --step-failed: #b42318;
+  --google-chip-bg: #dbeafe;
+  --google-chip-text: #1e40af;
+  --file-doc: #2563eb;
+  --file-slides: #b45309;
+  --file-sheet: #15803d;
+  --file-pdf: #b91c1c;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --result-inner: #22252d;
+    --quote-bg: #262650;
+    --quote-rule: #8b84ff;
+    --step-running: #9a93ff;
+    --step-done: #6fd39b;
+    --step-partial: #f0b85a;
+    --step-failed: #ff8f7a;
+    --google-chip-bg: #1c3355;
+    --google-chip-text: #bcd7ff;
+    --file-doc: #8ab4ff;
+    --file-slides: #f4c063;
+    --file-sheet: #7fd39b;
+    --file-pdf: #ff9b8f;
+  }
+}
+
+/* The reading column */
+
+.message-list {
+  gap: 1.5rem;
+  padding: 2rem 1.5rem 1.5rem;
+}
+
+.message-list > *,
+.composer > * {
+  max-width: var(--chat-column);
+}
+
+/* Replies read as plain text on the page; your messages are bubbles on the right. */
+.message {
+  gap: 0.75rem;
+}
+
+.message-assistant {
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.message-assistant .message-author {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  color: var(--text);
+  font-size: 0.875rem;
+}
+
+.message-assistant .message-author::before {
+  content: "";
+  width: 1.125rem;
+  height: 1.125rem;
+  border-radius: 50%;
+  background: var(--accent-gradient);
+  flex-shrink: 0;
+}
+
+.message-user {
+  max-width: min(80%, 36rem);
+  padding: 0.75rem 1.125rem;
+  border-radius: 20px 20px 6px 20px;
+}
+
+/* Line the bubble up with the right edge of the reading column, not of the window. */
+.message-list > .message-user {
+  margin-right: max(0px, calc((100% - var(--chat-column)) / 2));
+}
+
+.message-content {
+  line-height: 1.65;
+}
+
+.message-assistant .message-content {
+  font-size: 1rem;
+}
+
+.thinking {
+  animation: thinking-pulse 1.6s ease-in-out infinite;
+}
+
+@keyframes thinking-pulse {
+  50% {
+    opacity: 0.45;
+  }
+}
+
+/* Empty conversation: starter suggestions */
+
+.empty-state {
+  max-width: var(--chat-column);
+  align-items: center;
+  gap: 1rem;
+  font-size: 1rem;
+  font-weight: 400;
+}
+
+.empty-mark {
+  width: 2.75rem;
+  height: 2.75rem;
+  border-radius: 50%;
+  background: var(--accent-gradient);
+  box-shadow: 0 8px 24px rgb(79 70 229 / 0.25);
+}
+
+.chat-starter-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 15rem), 1fr));
+  gap: 0.625rem;
+}
+
+.chat-starter {
+  width: 100%;
+  height: 100%;
+  min-height: 3.25rem;
+  padding: 0.875rem 1rem;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  font-size: 0.9375rem;
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 0.15s ease-out, background-color 0.15s ease-out;
+}
+
+.chat-starter:hover {
+  border-color: var(--accent);
+  background: var(--surface-muted);
+}
+
+/* Run panel: one header line over one line per step */
+
+.run-panel {
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--surface);
+  overflow: hidden;
+}
+
+.run-header,
+.run-step-toggle {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  width: 100%;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.run-header {
+  min-height: 2.75rem;
+  padding: 0.5rem 0.875rem;
+  font-size: 0.875rem;
+  font-weight: 600;
+}
+
+.run-header:hover,
+.run-step-toggle:hover {
+  background: var(--surface-muted);
+}
+
+/* Inside a panel that clips, so the ring is drawn inside the button. */
+.run-header:focus-visible,
+.run-step-toggle:focus-visible {
+  outline-offset: -3px;
+}
+
+/* Long lines wrap instead of being cut, so phones show every count. */
+.run-header-text,
+.run-step-label {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-variant-numeric: tabular-nums;
+}
+
+.run-steps {
+  list-style: none;
+  margin: 0;
+  padding: 0.375rem 0.5rem 0.625rem;
+  border-top: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 0.125rem;
+}
+
+.run-step {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-height: 2rem;
+  padding: 0.25rem 0.375rem;
+  font-size: 0.8125rem;
+}
+
+.run-step.has-detail {
+  display: block;
+  padding: 0;
+}
+
+.run-step-toggle {
+  min-height: 2rem;
+  padding: 0.25rem 0.375rem;
+  border-radius: 8px;
+  font-size: 0.8125rem;
+}
+
+.run-step-plan .run-step-label {
+  color: var(--text-muted);
+  font-style: italic;
+}
+
+.run-step-detail {
+  margin: 0 0.375rem 0.375rem 1.875rem;
+  color: var(--text-muted);
+  font-size: 0.8125rem;
+  overflow-wrap: anywhere;
+}
+
+/* A display rule would otherwise win over the hidden attribute. */
+.run-steps[hidden],
+.run-step-detail[hidden],
+.quote-body[hidden] {
+  display: none;
+}
+
+.step-icon {
+  flex-shrink: 0;
+}
+
+.step-icon-running {
+  color: var(--step-running);
+  transform-origin: center;
+  animation: run-spin 0.9s linear infinite;
+}
+
+.step-icon-done {
+  color: var(--step-done);
+}
+
+.step-icon-partial,
+.step-icon-stopped {
+  color: var(--step-partial);
+}
+
+.step-icon-failed {
+  color: var(--step-failed);
+}
+
+.step-icon-plan {
+  color: var(--text-muted);
+}
+
+@keyframes run-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.run-chevron {
+  flex-shrink: 0;
+  color: var(--text-muted);
+  transition: transform 0.15s ease-out;
+}
+
+.run-chevron.is-open {
+  transform: rotate(90deg);
+}
+
+/* Result cards: verified facts, between the run panel and the reply text */
+
+.result-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.result-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  padding: 1rem 1.125rem;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  background: var(--result-bg);
+  box-shadow: 0 4px 14px rgb(30 35 60 / 0.05);
+  min-width: 0;
+}
+
+.result-kicker {
+  color: var(--text-muted);
+  font-size: 0.8125rem;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.result-title {
+  font-size: 1rem;
+  font-weight: 700;
+}
+
+.result-subtitle {
+  margin-bottom: 0.5rem;
+  color: var(--text-muted);
+  font-size: 0.875rem;
+  font-weight: 700;
+}
+
+.result-kicker + .result-title {
+  margin-top: -0.5rem;
+}
+
+.result-warning {
+  padding: 0.5rem 0.75rem;
+  border-radius: 10px;
+  background: var(--butter);
+  color: var(--butter-text);
+  font-size: 0.875rem;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.result-empty {
+  font-weight: 600;
+}
+
+.result-chips {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.375rem;
+}
+
+.result-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.125rem 0.5rem;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent-soft-text);
+  font-size: 0.75rem;
+  font-style: normal;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.result-chip-muted {
+  background: var(--surface-muted);
+  color: var(--text-muted);
+}
+
+.result-chip-warn {
+  background: var(--butter);
+  color: var(--butter-text);
+}
+
+.result-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.result-link {
+  text-decoration: none;
+}
+
+.result-foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding-top: 0.625rem;
+  border-top: 1px solid var(--border);
+}
+
+.result-stale {
+  color: var(--butter-text);
+  font-size: 0.875rem;
+  font-weight: 700;
+}
+
+/* Fares */
+
+.fare-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 15rem), 1fr));
+  gap: 0.625rem;
+}
+
+.fare-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  padding: 0.75rem 0.875rem;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--result-inner);
+  min-width: 0;
+}
+
+.fare-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.25rem 0.75rem;
+}
+
+.fare-airline {
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+
+.fare-price {
+  font-size: 1.25rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+
+.fare-facts {
+  margin: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(5.5rem, 1fr));
+  gap: 0.5rem;
+  font-size: 0.8125rem;
+}
+
+.fare-facts dt {
+  color: var(--text-muted);
+  font-weight: 700;
+}
+
+.fare-facts dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+/* "Quoted from <domain>" and the quote behind it */
+
+.quote {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  min-width: 0;
+}
+
+.quote-badge {
+  align-self: flex-start;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+  max-width: 100%;
+  min-height: 1.875rem;
+  padding: 0.25rem 0.625rem;
+  border: 0;
+  border-radius: 999px;
+  background: var(--sage);
+  color: var(--sage-text);
+  font: inherit;
+  font-size: 0.75rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.quote-badge span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.quote-badge svg {
+  flex-shrink: 0;
+}
+
+.quote-body {
+  display: flex;
+  flex-direction: column;
+  gap: 0.375rem;
+}
+
+.quote-text,
+.claim-quote {
+  margin: 0;
+  padding: 0.5rem 0.75rem;
+  border-left: 3px solid var(--quote-rule);
+  border-radius: 0 10px 10px 0;
+  background: var(--quote-bg);
+  color: var(--text);
+  font-size: 0.875rem;
+  overflow-wrap: anywhere;
+}
+
+.quote-meta {
+  overflow-wrap: anywhere;
+}
+
+/* Research claims */
+
+.claim-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.875rem;
+}
+
+.claim {
+  display: flex;
+  flex-direction: column;
+  gap: 0.375rem;
+  min-width: 0;
+}
+
+.claim-label {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.375rem;
+  color: var(--text-muted);
+  font-size: 0.8125rem;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.claim-quote {
+  font-size: 0.9375rem;
+}
+
+.claim-source {
+  overflow-wrap: anywhere;
+}
+
+/* Calendar and Drive rows */
+
+.row-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.account-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.25rem 0.75rem;
+  padding: 0.625rem 0;
+  border-top: 1px solid var(--border);
+}
+
+.account-row:first-child {
+  border-top: 0;
+  padding-top: 0;
+}
+
+.event-time {
+  flex: 0 0 10.5rem;
+  color: var(--text-muted);
+  font-size: 0.8125rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.account-row-main {
+  flex: 1 1 12rem;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.account-row-title {
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.account-row-main .hint {
+  overflow-wrap: anywhere;
+}
+
+.account-row-link {
+  flex-shrink: 0;
+  font-size: 0.875rem;
+}
+
+.file-icon {
+  flex-shrink: 0;
+  color: var(--text-muted);
+}
+
+.file-icon-doc {
+  color: var(--file-doc);
+}
+
+.file-icon-slides {
+  color: var(--file-slides);
+}
+
+.file-icon-sheet {
+  color: var(--file-sheet);
+}
+
+.file-icon-pdf {
+  color: var(--file-pdf);
+}
+
+/* Composer */
+
+.composer-box {
+  border-width: 1px;
+  border-color: var(--border-strong);
+  border-radius: 24px;
+  box-shadow: 0 8px 28px rgb(30 35 60 / 0.08);
+}
+
+.composer-box:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft), 0 8px 28px rgb(30 35 60 / 0.08);
+}
+
+.composer-chips {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 0.375rem;
+  min-width: 0;
+}
+
+.composer-chip {
+  min-height: 2.25rem;
+  padding: 0.375rem 0.625rem;
+  border-radius: 999px;
+}
+
+.chip-google {
+  background: var(--google-chip-bg);
+  color: var(--google-chip-text);
+}
+
+.tools-menu {
+  width: min(21rem, calc(100vw - 2rem));
+  display: flex;
+  flex-direction: column;
+  gap: 0.125rem;
+}
+
+.tool-option strong {
+  font-weight: 700;
+}
+
+.tool-option.is-disabled {
+  cursor: default;
+}
+
+.tool-option.is-disabled:hover {
+  background: transparent;
+}
+
+.tool-option.is-disabled strong {
+  color: var(--text-muted);
+}
+
+.tool-link {
+  color: var(--text);
+  font-weight: 400;
+  text-decoration: none;
+}
+
+.tool-link strong {
+  color: var(--accent);
+}
+
+.tool-link:hover {
+  color: var(--text);
+}
+
+.disclaimer {
+  font-size: 0.75rem;
+}
+
+/* Phones: one column, nothing wider than the screen */
+
+@media (max-width: 760px) {
+  .message-list {
+    gap: 1.25rem;
+    padding-top: 1.25rem;
+  }
+
+  .message-user {
+    max-width: 88%;
+  }
+
+  .result-card {
+    padding: 0.875rem;
+  }
+
+  .composer {
+    padding-bottom: 0.75rem;
+  }
+
+  /* The "+" menu spans the message box, so it never runs off the screen. */
+  .composer-tools-anchor {
+    position: static;
+  }
+
+  .composer-tools-anchor .tools-menu {
+    left: 0;
+    right: 0;
+    bottom: calc(100% + 0.5rem);
+    width: auto;
+  }
+}
+
+@media (max-width: 520px) {
+  .event-time {
+    flex-basis: 100%;
+  }
+}
+
+/* Reduce motion: no spin, pulse or fold animation; states still change at once. */
+@media (prefers-reduced-motion: reduce) {
+  .step-icon-running,
+  .thinking {
+    animation: none;
+  }
+
+  .run-chevron,
+  .chat-starter {
+    transition: none;
+  }
+}

@@ -55,8 +55,25 @@ describe("readChatStream", () => {
     expect(events.map((e) => e.type)).toEqual(["delta", "delta", "done"]);
   });
 
-  it("rejects unknown event shapes", async () => {
-    await expect(collect(readChatStream(streamFrom(['{"type":"exec"}\n'])))).rejects.toBeInstanceOf(StreamFormatError);
+  it("skips events of an unknown type, so a newer server does not break an older tab", async () => {
+    const events = await collect(
+      readChatStream(streamFrom(['{"type":"exec"}\n{"type":"delta","text":"a"}\n{"type":"later_event","x":1}'])),
+    );
+    expect(events.map((e) => e.type)).toEqual(["delta"]);
+  });
+
+  it("passes step and result events through", async () => {
+    const step = { type: "step", step: { id: "flights.search", label: "Searched the web", status: "done" } };
+    const result = { type: "result", result: { kind: "calendar", events: [], window: { start: "a", end: "b" } } };
+    const events = await collect(readChatStream(streamFrom([`${JSON.stringify(step)}\n${JSON.stringify(result)}\n`])));
+    expect(events).toEqual([step, result]);
+  });
+
+  it("rejects malformed JSON and events without a string type", async () => {
+    await expect(collect(readChatStream(streamFrom(['{"type":"delta"\n'])))).rejects.toBeInstanceOf(StreamFormatError);
+    await expect(collect(readChatStream(streamFrom(['{"text":"a"}\n'])))).rejects.toBeInstanceOf(StreamFormatError);
+    await expect(collect(readChatStream(streamFrom(['{"type":7}\n'])))).rejects.toBeInstanceOf(StreamFormatError);
+    await expect(collect(readChatStream(streamFrom(["null\n"])))).rejects.toBeInstanceOf(StreamFormatError);
   });
 });
 

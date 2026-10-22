@@ -20,7 +20,7 @@ export default async function LoginPage({ searchParams }: LoginPageProps) {
       <h1>Sign in</h1>
       {linkInvalid && (
         <p className="alert alert-error" role="alert">
-          That link is invalid or has expired. Sign in, or request a new link.
+          That link is invalid or expired; sign in or request a new one.
         </p>
       )}
       <AuthForm

@@ -4,7 +4,6 @@ import Link from "next/link";
 import { useId, useState } from "react";
 import { ApiError } from "@/lib/api-client";
 import { MAX_MEMORY_CHARS } from "@/lib/limits";
-import { MODE_LABELS } from "@/lib/mode";
 import type { MemoryDTO } from "@/types/api";
 import { deleteMemory, memoryErrorMessage, updateMemory } from "./api";
 import type { MemorySuggestion } from "./useMemorySuggestions";
@@ -137,9 +136,7 @@ export function MemorySuggestionCard({
 
       {outcome === "waiting" && !editing && (
         <>
-          <p className="hint">
-            P-Dot suggested remembering this in {MODE_LABELS[memory.mode]} mode. It is not used until you keep it.
-          </p>
+          <p className="hint">Suggested memory; not used until you keep it.</p>
           {askReason && (
             <p className="approval-ask-reason small">
               <strong>Asks even in Auto:</strong> {askReason}
@@ -175,7 +172,7 @@ export function MemorySuggestionCard({
           Kept. <Link href="/memory">Open what P-Dot remembers</Link>
         </p>
       )}
-      {outcome === "dropped" && <p className="approval-outcome small muted">Not kept. The suggestion was deleted.</p>}
+      {outcome === "dropped" && <p className="approval-outcome small muted">Not kept; the suggestion was deleted.</p>}
       {error && (
         <p className="alert alert-error small" role="alert">
           {error}

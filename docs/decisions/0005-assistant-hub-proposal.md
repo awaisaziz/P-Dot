@@ -2,6 +2,7 @@
 
 - Status: Partly implemented (2026-10-16, updated 2026-10-19). Built: Personal/Work modes, to-do list, conversation rename, browser dictation, the new landing page, approval cards, the memory and documents page, "what was sent", the action log, reminders on the Workflows page, live built-in tools on the Connectors page, the installable app and a Devices page ([0009](0009-memory-documents-actions.md), [0010](0010-pwa-and-device-pairing.md)). Not built and still open: the assistant proposing actions, real account connectors, routines and a scheduler, the daily brief, push delivery, device pairing, Telegram/WhatsApp/phone. The PRD has not been amended.
 - Source: design review comment on the "P-Dot Frontend Design" canvas (2026-10-16).
+- Superseded in part (2026-10-21, proposed): the Personal and Work views are replaced by one workspace ([0014](0014-one-workspace.md)); real account connectors start with read-only Google Calendar and Drive ([0016](0016-google-connectors.md)); the assistant now proposes actions and runs grounded workflows ([0015](0015-grounded-workflows.md)). The PRD's section 8 is amended for these.
 
 ## Request
 

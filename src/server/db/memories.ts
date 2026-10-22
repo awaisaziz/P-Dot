@@ -21,8 +21,11 @@ export interface NewMemory {
 }
 
 export interface MemoryRepository {
-  /** Newest first. `status` filters by proposed or active; undefined returns both. */
-  listMemories(userId: string, mode: Mode, status: MemoryStatus | undefined, limit: number): Promise<MemoryDTO[]>;
+  /**
+   * Newest first. `status` filters by proposed or active; undefined returns both.
+   * `mode`, when given, keeps only the rows saved with it (decision 0014: the app passes none).
+   */
+  listMemories(userId: string, status: MemoryStatus | undefined, limit: number, mode?: Mode): Promise<MemoryDTO[]>;
   /** Returns null when no memory with that ID belongs to the user. */
   getMemory(userId: string, memoryId: string): Promise<MemoryDTO | null>;
   /** A null embedding stores no vector and no model name. */
@@ -88,12 +91,9 @@ function embeddingColumns(embedding: number[] | null): { embedding: string | nul
 
 export function createMemoryRepository(supabase: SupabaseClient): MemoryRepository {
   return {
-    async listMemories(userId, mode, status, limit) {
-      let query = supabase
-        .from("memories")
-        .select(MEMORY_COLUMNS)
-        .eq("user_id", userId)
-        .eq("mode", mode);
+    async listMemories(userId, status, limit, mode) {
+      let query = supabase.from("memories").select(MEMORY_COLUMNS).eq("user_id", userId);
+      if (mode) query = query.eq("mode", mode);
       if (status) query = query.eq("status", status);
       const { data, error } = await query.order("created_at", { ascending: false }).limit(limit);
       if (error) throw new RepositoryError("listMemories");

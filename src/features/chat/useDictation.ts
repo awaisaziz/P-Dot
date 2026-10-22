@@ -72,9 +72,9 @@ export function interimText(event: SpeechResultEvent): string {
 }
 
 const ERROR_MESSAGES: Record<string, string> = {
-  "not-allowed": "Microphone access is blocked. Allow the microphone for this site in your browser's site settings, then try again.",
-  "service-not-allowed": "This browser's speech service is turned off. Turn on speech recognition in its settings, or type instead.",
-  "no-speech": "No speech was heard. Try again.",
+  "not-allowed": "Microphone blocked: Allow the microphone for this site in your browser settings, then retry.",
+  "service-not-allowed": "Speech recognition is off in this browser; turn it on in its settings or type instead.",
+  "no-speech": "No speech heard; try again.",
   "audio-capture": "No microphone was found.",
   network: "Speech recognition needs an internet connection.",
   "language-not-supported": "This browser cannot recognise English speech.",
@@ -83,7 +83,7 @@ const ERROR_MESSAGES: Record<string, string> = {
 /** What to tell the user for a recognition error. Null when it needs no message (dictation was stopped on purpose). */
 export function dictationErrorMessage(code: string): string | null {
   if (code === "aborted") return null;
-  return ERROR_MESSAGES[code] ?? "Dictation stopped unexpectedly. Try again.";
+  return ERROR_MESSAGES[code] ?? "Dictation stopped unexpectedly; try again.";
 }
 
 /** The draft with a dictated phrase added after a space, cut at the message length limit. */
@@ -175,7 +175,7 @@ export function useDictation(onText: (text: string) => void) {
       setListening(true);
     } catch {
       recognitionRef.current = null;
-      setError("Dictation could not start. Try again.");
+      setError("Dictation could not start; try again.");
     }
   }, []);
 

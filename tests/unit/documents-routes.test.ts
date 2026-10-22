@@ -51,9 +51,9 @@ class FakeDocuments implements DocumentRepository {
     return this.stored.find((d) => d.userId === userId && d.dto.id === documentId);
   }
 
-  async listDocuments(userId: string, mode: Mode, limit: number): Promise<DocumentDTO[]> {
+  async listDocuments(userId: string, limit: number, mode?: Mode): Promise<DocumentDTO[]> {
     return this.stored
-      .filter((d) => d.userId === userId && d.dto.mode === mode)
+      .filter((d) => d.userId === userId && (!mode || d.dto.mode === mode))
       .map((d) => ({ ...d.dto }))
       .reverse()
       .slice(0, limit);
@@ -148,7 +148,7 @@ const params = (id: string) => ({ params: Promise.resolve({ id }) });
 const LONG_TEXT = `${SECRET}\n\n${"Filler sentence for the plan. ".repeat(200)}`;
 
 function validBody(overrides: Record<string, unknown> = {}) {
-  return { mode: "work", title: "Team handbook", mediaType: "text/plain", text: LONG_TEXT, ...overrides };
+  return { title: "Team handbook", mediaType: "text/plain", text: LONG_TEXT, ...overrides };
 }
 
 /** Everything the code logged, as one string. */
@@ -185,25 +185,29 @@ beforeEach(() => {
 describe("GET /api/documents", () => {
   it("requires a session", async () => {
     signInAs(null);
-    expect((await documentsRoute.GET(plainRequest("GET", "http://localhost/api/documents?mode=work"))).status).toBe(401);
+    expect((await documentsRoute.GET(plainRequest("GET", "http://localhost/api/documents"))).status).toBe(401);
   });
 
-  it("rejects a missing or unknown mode", async () => {
+  it("accepts a missing mode, and ignores any ?mode= from an older tab", async () => {
     signInAs(ALICE);
-    expect((await documentsRoute.GET(plainRequest("GET", "http://localhost/api/documents"))).status).toBe(400);
-    expect((await documentsRoute.GET(plainRequest("GET", "http://localhost/api/documents?mode=hobby"))).status).toBe(400);
+    await docs.createDocument(ALICE, { mode: "work", title: "Mine", mediaType: "text/plain", charCount: 10 });
+    for (const url of ["http://localhost/api/documents", "http://localhost/api/documents?mode=personal", "http://localhost/api/documents?mode=hobby"]) {
+      const response = await documentsRoute.GET(plainRequest("GET", url));
+      expect(response.status).toBe(200);
+      expect((await response.json()).documents.map((d: DocumentDTO) => d.title)).toEqual(["Mine"]);
+    }
   });
 
-  it("lists only the signed-in user's documents in the requested mode, without embeddings", async () => {
+  it("lists every document of the signed-in user whatever its mode, without embeddings", async () => {
     signInAs(ALICE);
     await docs.createDocument(ALICE, { mode: "work", title: "Mine", mediaType: "text/plain", charCount: 10 });
     await docs.createDocument(ALICE, { mode: "personal", title: "Home", mediaType: "text/plain", charCount: 10 });
     await docs.createDocument(BOB, { mode: "work", title: "Bob's", mediaType: "text/plain", charCount: 10 });
 
-    const response = await documentsRoute.GET(plainRequest("GET", "http://localhost/api/documents?mode=work"));
+    const response = await documentsRoute.GET(plainRequest("GET", "http://localhost/api/documents"));
     expect(response.status).toBe(200);
     const body = await response.json();
-    expect(body.documents.map((d: DocumentDTO) => d.title)).toEqual(["Mine"]);
+    expect(body.documents.map((d: DocumentDTO) => d.title)).toEqual(["Home", "Mine"]);
     expect(JSON.stringify(body)).not.toContain("embedding");
   });
 });
@@ -278,7 +282,8 @@ describe("POST /api/documents", () => {
     expect(response.status).toBe(201);
 
     const body = await response.json();
-    expect(body).toMatchObject({ mode: "work", title: "Team handbook", mediaType: "text/plain", status: "ready" });
+    // Without a mode in the body the document gets WORKSPACE_MODE (decision 0014).
+    expect(body).toMatchObject({ mode: "personal", title: "Team handbook", mediaType: "text/plain", status: "ready" });
     expect(body.charCount).toBe(LONG_TEXT.length);
     expect(JSON.stringify(body)).not.toContain("embedding");
 
@@ -290,6 +295,14 @@ describe("POST /api/documents", () => {
 
     // The database writes the action log rows (document_added, then document_ready) from triggers.
     expect(createActionLogRepository).not.toHaveBeenCalled();
+  });
+
+  it("accepts a mode from an older tab and stores WORKSPACE_MODE instead (decision 0014)", async () => {
+    signInAs(ALICE);
+    const response = await documentsRoute.POST(jsonRequest("POST", validBody({ mode: "work" })));
+    expect(response.status).toBe(201);
+    expect((await response.json()).mode).toBe("personal");
+    expect(docs.stored.map((d) => d.dto.mode)).toEqual(["personal"]);
   });
 
   it("keeps the document text out of the server logs", async () => {
@@ -404,7 +417,7 @@ describe("DELETE /api/documents/:id", () => {
 
 describe("documents left processing", () => {
   const ELEVEN_MINUTES_MS = 11 * 60 * 1000;
-  const listWork = () => documentsRoute.GET(plainRequest("GET", "http://localhost/api/documents?mode=work"));
+  const listAll = () => documentsRoute.GET(plainRequest("GET", "http://localhost/api/documents"));
   const makeOld = (doc: StoredDocument) => {
     doc.dto.createdAt = new Date(Date.now() - ELEVEN_MINUTES_MS).toISOString();
   };
@@ -431,7 +444,7 @@ describe("documents left processing", () => {
     makeOld(stored);
     const embedCalls = embedder.embed.mock.calls.length;
 
-    const list = await listWork();
+    const list = await listAll();
     expect(list.status).toBe(200);
     expect((await list.json()).documents[0]).toMatchObject({ id: stored.dto.id, status: "ready" });
     expect(stored.dto.status).toBe("ready");
@@ -442,7 +455,7 @@ describe("documents left processing", () => {
     signInAs(ALICE);
     const fresh = await docs.createDocument(ALICE, { mode: "work", title: "Uploading", mediaType: "text/plain", charCount: 5 });
 
-    const list = await listWork();
+    const list = await listAll();
     expect((await list.json()).documents[0]).toMatchObject({ id: fresh.id, status: "processing" });
     expect(docs.stored[0]!.dto.status).toBe("processing");
   });
@@ -452,7 +465,7 @@ describe("documents left processing", () => {
     const created = await docs.createDocument(ALICE, { mode: "work", title: "Stopped", mediaType: "text/plain", charCount: 5 });
     makeOld(docs.stored[0]!);
 
-    const list = await listWork();
+    const list = await listAll();
     expect((await list.json()).documents[0]).toMatchObject({ id: created.id, status: "failed" });
     expect(embedder.embed).not.toHaveBeenCalled();
   });
@@ -462,7 +475,7 @@ describe("documents left processing", () => {
     makeOld(docs.stored[0]!);
     signInAs(ALICE);
 
-    expect((await listWork()).status).toBe(200);
+    expect((await listAll()).status).toBe(200);
     expect(docs.stored[0]!.dto.status).toBe("processing");
   });
 
@@ -471,7 +484,7 @@ describe("documents left processing", () => {
     await docs.createDocument(ALICE, { mode: "work", title: "Mine", mediaType: "text/plain", charCount: 5 });
     vi.spyOn(docs, "settleStaleDocuments").mockRejectedValue(new Error("database unavailable"));
 
-    const list = await listWork();
+    const list = await listAll();
     expect(list.status).toBe(200);
     expect((await list.json()).documents).toHaveLength(1);
     const events = vi.mocked(console.warn).mock.calls.map((call) => JSON.parse(String(call[0])).event);
@@ -485,7 +498,7 @@ describe("documents left processing", () => {
 
 describe("documents when one write fails", () => {
   const ELEVEN_MINUTES_MS = 11 * 60 * 1000;
-  const listWork = () => documentsRoute.GET(plainRequest("GET", "http://localhost/api/documents?mode=work"));
+  const listAll = () => documentsRoute.GET(plainRequest("GET", "http://localhost/api/documents"));
   const upload = () => documentsRoute.POST(jsonRequest("POST", validBody()));
   const complete = (doc: StoredDocument) => doc.chunks.length > 0 && doc.chunks.every((c) => c.embedding.length > 0);
   const age = () => {
@@ -513,7 +526,7 @@ describe("documents when one write fails", () => {
   /** Lists the documents. Settling never pays for an embedding. */
   async function list(at: string): Promise<DocumentDTO[]> {
     const paid = embeddings.state.calls;
-    const response = await listWork();
+    const response = await listAll();
     expect(response.status, at).toBe(200);
     expect(embeddings.state.calls, `${at}: settling must not embed again`).toBe(paid);
     return (await response.json()).documents;

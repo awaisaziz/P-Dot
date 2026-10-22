@@ -9,7 +9,8 @@ import { RepositoryError } from "./conversations";
  * authenticated user's ID and RLS enforces the same rule in the database.
  */
 export interface TaskRepository {
-  listTasks(userId: string, mode: Mode, limit: number): Promise<TaskDTO[]>;
+  /** Oldest first. `mode`, when given, keeps only the rows saved with it (decision 0014: the app passes none). */
+  listTasks(userId: string, limit: number, mode?: Mode): Promise<TaskDTO[]>;
   createTask(userId: string, mode: Mode, title: string): Promise<TaskDTO>;
   /** Returns null when no task with that ID belongs to the user. */
   updateTask(userId: string, taskId: string, changes: { title?: string; done?: boolean }): Promise<TaskDTO | null>;
@@ -34,14 +35,10 @@ function toTask(row: unknown): TaskDTO {
 
 export function createTaskRepository(supabase: SupabaseClient): TaskRepository {
   return {
-    async listTasks(userId, mode, limit) {
-      const { data, error } = await supabase
-        .from("tasks")
-        .select(TASK_COLUMNS)
-        .eq("user_id", userId)
-        .eq("mode", mode)
-        .order("created_at", { ascending: true })
-        .limit(limit);
+    async listTasks(userId, limit, mode) {
+      let query = supabase.from("tasks").select(TASK_COLUMNS).eq("user_id", userId);
+      if (mode) query = query.eq("mode", mode);
+      const { data, error } = await query.order("created_at", { ascending: true }).limit(limit);
       if (error) throw new RepositoryError("listTasks");
       return (data ?? []).map(toTask);
     },

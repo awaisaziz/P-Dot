@@ -52,6 +52,15 @@ Auto applies only to replies to messages the user sent while Auto was on, and on
 
 When this lands, update: the hint in Settings → Approvals ("P-Dot does not propose actions in chat yet…"), `PastProposal` (show "Done on its own" when `decidedBy` is `auto`) and `describeLogEntry` (label `auto_approved` and `undone`).
 
+## Amendment (2026-10-21): connector reads behind a visible toggle
+
+Decision [0016](0016-google-connectors.md) adds read-only Google connectors. Step 5 above asks for one approval card for every sensitive read. A card for each calendar lookup would make the connector unusable, so this amendment, pending the owner's review, replaces step 5 for connector reads with a visible switch kept on the device:
+
+- The Google chip in the composer's "+" menu is **off** until the user turns it on. Turning it on is the approval: while it shows as on, the assistant may call `calendar_list_events`, `drive_search_files` and `drive_read_file` for messages sent from that device. Turning it off stops it at once. The choice is stored on the device, like the approval mode, and sent with each message.
+- Each read shows as a step line under the reply ("Read 6 events from your calendar"), so the user sees every read.
+- After a connector read, the rest of that reply offers no tool that sends text outside P-Dot (web search, flight search, research), and Auto runs nothing on its own for that reply: every proposal waits as a card (decision [0015](0015-grounded-workflows.md), "Tainted replies").
+- Any other read of private data stays `read_sensitive` and follows step 5.
+
 ## Open decisions
 
 - The limit of 3 actions per reply.

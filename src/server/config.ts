@@ -5,6 +5,7 @@ import { MODEL_TIERS, type ModelTier } from "@/lib/routing";
 import { buildRoutingConfig, DEFAULT_CHAINS, type RoutingConfig } from "@/server/assistant/tiers";
 import type { SpendCaps, SpendProvider } from "@/server/db/spend";
 import { isLocalModel, priceForModel } from "@/server/providers/nebius/pricing";
+import type { TavilySettings } from "@/server/providers/tavily/client";
 
 // Server-only configuration. Values are read per call (not at import time) so
 // `next build` works without secrets and misconfiguration fails the request
@@ -26,8 +27,12 @@ export interface AssistantConfig {
   };
   /** Model tiers: chains, output limits and timing (docs/decisions/0007-model-routing.md). */
   routing: RoutingConfig;
-  /** Null when TAVILY_API_KEY is not set; search requests then report failure. */
-  tavily: { apiKey: string } | null;
+  /**
+   * Null when TAVILY_API_KEY is not set; search requests then report failure.
+   * `{ keyless: true }` only outside production, when TAVILY_KEYLESS is true
+   * and no key is set (local runs, decision 0015).
+   */
+  tavily: TavilySettings | null;
   quota: {
     requestsPerWindow: number;
     windowSeconds: number;
@@ -124,6 +129,21 @@ function blankToUndefined(value: string | undefined): string | undefined {
   return value === undefined || value.trim() === "" ? undefined : value;
 }
 
+const keylessFlag = z.stringbool().default(false);
+
+/**
+ * Tavily's keyless access, for local runs only. Read only when no key is set
+ * and NODE_ENV is not "production" (Next.js inlines process.env.NODE_ENV in
+ * the build, so a deployed Worker can never turn it on). Never on the Worker
+ * allow list.
+ */
+function tavilyKeyless(env: NodeJS.ProcessEnv, apiKey: string | undefined): boolean {
+  if (apiKey || process.env.NODE_ENV === "production" || env.NODE_ENV === "production") return false;
+  const parsed = keylessFlag.safeParse(blankToUndefined(env.TAVILY_KEYLESS));
+  if (!parsed.success) throw new ConfigError(["TAVILY_KEYLESS"]);
+  return parsed.data;
+}
+
 export function getAssistantConfig(env: NodeJS.ProcessEnv = process.env): AssistantConfig {
   const parsed = assistantEnvSchema.safeParse({
     NEBIUS_API_KEY: blankToUndefined(env.NEBIUS_API_KEY),
@@ -157,6 +177,11 @@ export function getAssistantConfig(env: NodeJS.ProcessEnv = process.env): Assist
   // chain is local and embeddings are local too.
   const allLocal = MODEL_TIERS.every((tier) => chains[tier].every(isLocalModel));
   if (!e.NEBIUS_API_KEY && !(allLocal && e.OLLAMA_EMBEDDING_MODEL)) throw new ConfigError(["NEBIUS_API_KEY"]);
+  const tavily: TavilySettings | null = e.TAVILY_API_KEY
+    ? { apiKey: e.TAVILY_API_KEY }
+    : tavilyKeyless(env, e.TAVILY_API_KEY)
+      ? { keyless: true }
+      : null;
   return {
     nebius: {
       apiKey: e.NEBIUS_API_KEY ?? "",
@@ -175,7 +200,7 @@ export function getAssistantConfig(env: NodeJS.ProcessEnv = process.env): Assist
       hedgeAfterMs: e.NEBIUS_HEDGE_AFTER_MS,
       firstTokenTimeoutMs: e.NEBIUS_FIRST_TOKEN_TIMEOUT_MS,
     }),
-    tavily: e.TAVILY_API_KEY ? { apiKey: e.TAVILY_API_KEY } : null,
+    tavily,
     quota: {
       requestsPerWindow: e.CHAT_REQUESTS_PER_WINDOW,
       windowSeconds: e.CHAT_WINDOW_SECONDS,

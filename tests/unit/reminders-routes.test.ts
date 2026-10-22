@@ -46,9 +46,9 @@ class MemoryReminders implements ReminderRepository {
   rows: { userId: string; reminder: ReminderDTO }[] = [];
   private counter = 0;
 
-  async listReminders(userId: string, mode: Mode, limit: number) {
+  async listReminders(userId: string, limit: number, mode?: Mode) {
     return this.rows
-      .filter((row) => row.userId === userId && row.reminder.mode === mode)
+      .filter((row) => row.userId === userId && (!mode || row.reminder.mode === mode))
       .map((row) => ({ ...row.reminder }))
       .sort((a, b) => Date.parse(a.dueAt) - Date.parse(b.dueAt))
       .slice(0, limit);
@@ -112,58 +112,72 @@ beforeEach(() => {
 describe("/api/reminders requires a session", () => {
   it("returns 401 for every method", async () => {
     signInAs(null);
-    expect((await listRoute.GET(plainRequest("GET", "http://localhost/api/reminders?mode=work"))).status).toBe(401);
-    expect((await listRoute.POST(jsonRequest("POST", { mode: "work", title: "x", dueAt: DUE }))).status).toBe(401);
+    expect((await listRoute.GET(plainRequest("GET", "http://localhost/api/reminders"))).status).toBe(401);
+    expect((await listRoute.POST(jsonRequest("POST", { title: "x", dueAt: DUE }))).status).toBe(401);
     expect((await itemRoute.PATCH(jsonRequest("PATCH", { title: "x" }), params(ALICE))).status).toBe(401);
     expect((await itemRoute.DELETE(plainRequest("DELETE"), params(ALICE))).status).toBe(401);
   });
 });
 
 describe("GET /api/reminders", () => {
-  it("returns only the requested mode, soonest first", async () => {
+  it("lists every reminder whatever its mode, soonest first", async () => {
     await seed(ALICE, "work", "Late", "2026-11-02T09:00:00Z");
     await seed(ALICE, "work", "Early", "2026-10-21T09:00:00Z");
     await seed(ALICE, "personal", "Home");
     signInAs(ALICE);
 
-    const response = await listRoute.GET(plainRequest("GET", "http://localhost/api/reminders?mode=work"));
+    const response = await listRoute.GET(plainRequest("GET", "http://localhost/api/reminders"));
     expect(response.status).toBe(200);
     const body = await response.json();
-    expect(body.reminders.map((r: ReminderDTO) => r.title)).toEqual(["Early", "Late"]);
+    expect(body.reminders.map((r: ReminderDTO) => r.title)).toEqual(["Early", "Home", "Late"]);
     expect(body.reminders[0]).toEqual(
       expect.objectContaining({ mode: "work", dueAt: "2026-10-21T09:00:00Z", status: "scheduled", proposalId: null }),
     );
   });
 
-  it("rejects a missing or unknown mode", async () => {
+  it("accepts a missing mode, and ignores any ?mode= from an older tab", async () => {
+    await seed(ALICE, "work", "Standup");
+    await seed(ALICE, "personal", "Dentist");
     signInAs(ALICE);
-    expect((await listRoute.GET(plainRequest("GET", "http://localhost/api/reminders"))).status).toBe(400);
-    expect((await listRoute.GET(plainRequest("GET", "http://localhost/api/reminders?mode=family"))).status).toBe(400);
+    for (const url of ["http://localhost/api/reminders", "http://localhost/api/reminders?mode=personal", "http://localhost/api/reminders?mode=family"]) {
+      const response = await listRoute.GET(plainRequest("GET", url));
+      expect(response.status).toBe(200);
+      expect((await response.json()).reminders).toHaveLength(2);
+    }
   });
 
   it("does not show another user's reminders", async () => {
     await seed(ALICE, "work", "Secret plan");
     signInAs(BOB);
-    const body = await (await listRoute.GET(plainRequest("GET", "http://localhost/api/reminders?mode=work"))).json();
+    const body = await (await listRoute.GET(plainRequest("GET", "http://localhost/api/reminders"))).json();
     expect(body.reminders).toEqual([]);
   });
 });
 
 describe("POST /api/reminders", () => {
-  it("creates a reminder and trims the title", async () => {
+  it("creates a reminder, trims the title and ignores a mode from an older tab", async () => {
     signInAs(ALICE);
     const response = await listRoute.POST(
       jsonRequest("POST", { mode: "work", title: `  ${SECRET_TITLE}  `, dueAt: DUE }),
     );
     expect(response.status).toBe(201);
+    expect(reminders.rows[0]!.reminder.mode).toBe("personal");
     expect(await response.json()).toMatchObject({
-      mode: "work",
+      mode: "personal",
       title: SECRET_TITLE,
       dueAt: DUE,
       status: "scheduled",
       proposalId: null,
     });
 
+  });
+
+  it("accepts a missing mode and stores WORKSPACE_MODE (decision 0014)", async () => {
+    signInAs(ALICE);
+    const response = await listRoute.POST(jsonRequest("POST", { title: "Call the dentist", dueAt: DUE }));
+    expect(response.status).toBe(201);
+    expect((await response.json()).mode).toBe("personal");
+    expect(reminders.rows[0]!.reminder.mode).toBe("personal");
   });
 
   it("accepts a title of exactly 200 characters", async () => {
@@ -177,7 +191,6 @@ describe("POST /api/reminders", () => {
     ["title over 200 characters", { mode: "work", title: "x".repeat(201), dueAt: DUE }],
     ["missing title", { mode: "work", dueAt: DUE }],
     ["bad mode", { mode: "family", title: "x", dueAt: DUE }],
-    ["missing mode", { title: "x", dueAt: DUE }],
     ["due time without a time zone", { mode: "work", title: "x", dueAt: "2026-10-30T17:00:00" }],
     ["due date with no time", { mode: "work", title: "x", dueAt: "2026-10-30" }],
     ["due time in words", { mode: "work", title: "x", dueAt: "tomorrow at 5pm" }],

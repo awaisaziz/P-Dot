@@ -14,9 +14,9 @@ import type { AuthFormState } from "./types";
 // Auth messages never reveal whether an account exists for an email address.
 
 const UNAVAILABLE: AuthFormState = {
-  error: "The account service is unavailable right now. Please try again later.",
+  error: "The account service is unavailable; try again later.",
 };
-const RATE_LIMITED: AuthFormState = { error: "Too many attempts. Please wait a few minutes and try again." };
+const RATE_LIMITED: AuthFormState = { error: "Too many attempts; wait a few minutes and try again." };
 
 function field(formData: FormData, name: string): string {
   const value = formData.get(name);
@@ -62,7 +62,7 @@ export async function signInAction(_prev: AuthFormState, formData: FormData): Pr
   if (error) {
     if (isRateLimit(error)) return { ...RATE_LIMITED, email };
     if (isOutage(error)) return { ...UNAVAILABLE, email };
-    return { error: "Incorrect email or password, or the email address has not been confirmed yet.", email };
+    return { error: "Wrong email or password, or the email is not confirmed yet.", email };
   }
   redirect(safeNextPath(field(formData, "next")));
 }
@@ -97,7 +97,7 @@ export async function signUpAction(_prev: AuthFormState, formData: FormData): Pr
     if (error.code === "weak_password") return { error: "Choose a stronger password.", email };
     // Same response whether or not the address is already registered.
     if (error.code === "user_already_exists" || error.code === "email_exists") return checkEmail;
-    return { error: "We could not create your account. Please try again.", email };
+    return { error: "Could not create your account; try again.", email };
   }
   // With email confirmation disabled in Supabase, sign-up returns a session.
   if (data.session) redirect("/chat");
@@ -135,7 +135,7 @@ export async function updatePasswordAction(_prev: AuthFormState, formData: FormD
 
   const { data: claims } = await supabase.auth.getClaims();
   if (!claims?.claims?.sub) {
-    return { error: "Your reset link has expired. Request a new one from the forgot-password page." };
+    return { error: "Your reset link expired; request a new one." };
   }
 
   const { error } = await supabase.auth.updateUser({ password: parsed.data.password });
@@ -146,7 +146,7 @@ export async function updatePasswordAction(_prev: AuthFormState, formData: FormD
     if (error.code === "reauthentication_needed") {
       return { error: "For security, request a new reset link and try again." };
     }
-    return { error: "We could not update your password. Please try again." };
+    return { error: "Could not update your password; try again." };
   }
   redirect("/chat");
 }

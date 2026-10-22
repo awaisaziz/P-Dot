@@ -153,7 +153,7 @@ export async function requestNotifications(): Promise<NotificationState> {
 export async function showTestNotification(): Promise<void> {
   const registration = await navigator.serviceWorker.ready;
   await registration.showNotification("P-Dot", {
-    body: "Notifications work on this device. This test came from your browser, not from P-Dot's server.",
+    body: "Notifications work on this device (a browser test, not a P-Dot push).",
     icon: "/icons/icon-192.png",
     badge: "/icons/badge-96.png",
     tag: "pdot-test",

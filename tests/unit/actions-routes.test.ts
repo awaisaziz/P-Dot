@@ -62,6 +62,8 @@ class FakeDb {
   };
   /** When set, every insert into this table fails (also inside the decision function). */
   failInsertInto: string | null = null;
+  /** When set, every select from this table answers with an error. */
+  failReadFrom: string | null = null;
   /** Runs once, just before the next update on any table or the next claim. */
   beforeNextUpdate: (() => void) | null = null;
   /** When set, the next rpc call returns this error (for example a lost connection). */
@@ -226,6 +228,9 @@ class FakeQuery implements PromiseLike<FakeResult> {
   private execute(): FakeResult {
     if (this.op === "insert" && this.db.failInsertInto === this.table) {
       return { data: null, error: { message: "simulated insert failure" } };
+    }
+    if (this.op === "select" && this.db.failReadFrom === this.table) {
+      return { data: null, error: { message: "simulated read failure" } };
     }
     if (this.op === "update" && this.db.beforeNextUpdate) {
       const hook = this.db.beforeNextUpdate;
@@ -437,7 +442,7 @@ describe("POST /api/actions/:id/decision: request checks", () => {
     ["a reject that carries a payload", { decision: "reject", payload: taskPayload("Changed") }],
     ["an edit that changes the kind", { decision: "approve", payload: reminderPayload() }],
     ["an edit with a blank title", { decision: "approve", payload: taskPayload("   ") }],
-    ["an edit with an unknown mode", { decision: "approve", payload: { ...taskPayload(), mode: "hobby" } }],
+    ["a payload that is not an object", { decision: "approve", payload: "create_task" }],
   ])("answers 400 for %s and runs nothing", async (_label, body) => {
     signInAs(ALICE);
     const row = seedProposal(ALICE, taskPayload());
@@ -534,8 +539,57 @@ describe("POST /api/actions/:id/decision: approve", () => {
     const reminder = rowsOf("reminders", ALICE)[0] as Row;
 
     expect(rowsOf("reminders")).toHaveLength(1);
-    expect(reminder).toMatchObject({ mode: "work", title: "Call the supplier", due_at: DUE, proposal_id: row.id });
+    expect(reminder).toMatchObject({ mode: "personal", title: "Call the supplier", due_at: DUE, proposal_id: row.id });
     expect((await response.json()).result).toEqual({ reminderId: reminder.id });
+  });
+
+  it.each([
+    ["create_task", { ...taskPayload(), mode: "work" as const }, "tasks"],
+    ["create_reminder", reminderPayload(), "reminders"],
+    ["save_memory", { ...memoryPayload(), mode: "work" as const }, "memories"],
+  ])("%s: a plain approval of a Work proposal sends the stored payload with WORKSPACE_MODE (decision 0014)", async (_kind, payload, table) => {
+    signInAs(ALICE);
+    const row = seedProposal(ALICE, payload);
+    const response = await decide(row.id as string, { decision: "approve" });
+    expect(response.status).toBe(200);
+    expect(db.rpcCalls).toEqual([
+      { name: "decide_action_proposal", args: { p_id: row.id, p_decision: "approve", p_payload: { ...payload, mode: "personal" } } },
+    ]);
+    expect(rowsOf(table, ALICE)).toEqual([expect.objectContaining({ mode: "personal" })]);
+    expect(storedProposal(row.id as string)).toMatchObject({ status: "executed", payload: { ...payload, mode: "personal" } });
+  });
+
+  it("sends no payload for a plain approval of a proposal that already has WORKSPACE_MODE", async () => {
+    signInAs(ALICE);
+    const row = seedProposal(ALICE, memoryPayload());
+    await decide(row.id as string, { decision: "approve" });
+    expect(db.rpcCalls[0]?.args.p_payload).toBeNull();
+  });
+
+  it.each([
+    ["a stored Work payload that does not parse", ALICE, { kind: "create_task", mode: "work", title: "" }, {}, 404],
+    ["a stored Work payload that names another kind", ALICE, reminderPayload(), { kind: "create_task" }, 404],
+    ["another user's Work proposal", BOB, reminderPayload(), {}, 404],
+    ["a Work proposal that was already decided", ALICE, reminderPayload(), { status: "rejected" }, 409],
+  ])("leaves %s to the database, unchanged", async (_label, owner, payload, overrides, status) => {
+    signInAs(ALICE);
+    const row = seedProposal(owner, payload, overrides);
+    const response = await decide(row.id as string, { decision: "approve" });
+    expect(response.status).toBe(status);
+    expect(db.rpcCalls[0]?.args.p_payload).toBeNull();
+    expect(rowsOf("tasks")).toHaveLength(0);
+    expect(rowsOf("reminders")).toHaveLength(0);
+  });
+
+  it("answers 500 and runs nothing when the stored payload cannot be read", async () => {
+    signInAs(ALICE);
+    const row = seedProposal(ALICE, reminderPayload());
+    db.failReadFrom = "action_proposals";
+    const response = await decide(row.id as string, { decision: "approve" });
+    expect(response.status).toBe(500);
+    expect(db.rpcCalls).toHaveLength(0);
+    expect(storedProposal(row.id as string)?.status).toBe("proposed");
+    expect(rowsOf("reminders")).toHaveLength(0);
   });
 
   it("saves a memory as active from the assistant, then adds its vector", async () => {
@@ -646,6 +700,30 @@ describe("POST /api/actions/:id/decision: approve", () => {
     expect(db.rpcCalls[0]?.args.p_payload).toEqual(taskPayload("Pay the invoice today"));
     expect(rowsOf("tasks", ALICE)[0]).toMatchObject({ title: "Pay the invoice today" });
     expect((await response.json()).payload).toEqual(taskPayload("Pay the invoice today"));
+  });
+
+  it.each([
+    ["a Work mode", { mode: "work" }],
+    ["an unknown mode", { mode: "hobby" }],
+    ["no mode", { mode: undefined }],
+  ])("gives an edit with %s WORKSPACE_MODE before validation (decision 0014)", async (_label, override) => {
+    signInAs(ALICE);
+    const row = seedProposal(ALICE, taskPayload("Pay the invoice"));
+    const response = await decide(row.id as string, {
+      decision: "approve",
+      payload: { ...taskPayload("Pay the invoice today"), ...override },
+    });
+    expect(response.status).toBe(200);
+    expect(db.rpcCalls[0]?.args.p_payload).toEqual(taskPayload("Pay the invoice today"));
+    expect(rowsOf("tasks", ALICE)[0]).toMatchObject({ mode: "personal", title: "Pay the invoice today" });
+  });
+
+  it("gives an edited reminder from a Work proposal WORKSPACE_MODE", async () => {
+    signInAs(ALICE);
+    const row = seedProposal(ALICE, reminderPayload());
+    const response = await decide(row.id as string, { decision: "approve", payload: reminderPayload() });
+    expect(response.status).toBe(200);
+    expect(rowsOf("reminders", ALICE)[0]).toMatchObject({ mode: "personal", title: "Call the supplier" });
   });
 
   it("runs an action once, and a second approval gets 409 without running it again", async () => {

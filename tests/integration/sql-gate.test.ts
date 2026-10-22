@@ -30,11 +30,13 @@ const MODES: DefaultGrants[] = ["legacy", "none"];
 const OWNED_TABLES = [
   "action_log",
   "action_proposals",
+  "connector_grants",
   "context_records",
   "conversations",
   "document_chunks",
   "documents",
   "memories",
+  "message_results",
   "messages",
   "reminders",
   "spend_reservations",
@@ -50,6 +52,13 @@ type OwnedTable = (typeof OWNED_TABLES)[number];
 
 const EMBEDDING = `[${[1, ...Array<number>(1023).fill(0)].join(",")}]`;
 
+/** The columns the app may read on connector_grants: every column except the two ciphertexts. */
+const GRANT_COLUMNS =
+  "id, user_id, provider, account_sub, account_email, scopes, access_token_expires_at, key_version, status, last_used_at, created_at, updated_at";
+/** A grant row as the connector code writes it, with a stand-in ciphertext of 40 bytes. */
+const GRANT_INSERT = `insert into connector_grants (user_id, provider, account_sub, account_email, scopes, refresh_token_ciphertext, key_version)
+  values ($1, 'google', 'gate', 'gate@example.com', array['openid'], decode(repeat('ab', 40), 'hex'), 1)`;
+
 interface Owned {
   conversationId: string;
   messageId: string;
@@ -57,6 +66,7 @@ interface Owned {
   proposalId: string;
   memoryId: string;
   chunkId: string;
+  grantId: string;
 }
 
 /** Seeds one row in every owned table for `userId`, as the migration owner. */
@@ -110,7 +120,13 @@ async function seedOwner(gate: SqlGate, userId: string): Promise<Owned> {
      values ($1, 'tavily', current_date, 'month', current_date, 1, 1)`,
     [userId],
   );
-  return { conversationId, messageId, documentId, proposalId, memoryId, chunkId };
+  await gate.admin(
+    `insert into message_results (message_id, user_id, kinds, payload)
+     values ($1, $2, '{flights}', '{"results":[],"steps":[]}')`,
+    [messageId, userId],
+  );
+  const grantId = await one(`${GRANT_INSERT} returning id`, [userId]);
+  return { conversationId, messageId, documentId, proposalId, memoryId, chunkId, grantId };
 }
 
 /** An insert of a row owned by `owner`, for each owned table. References point at the owner's rows. */
@@ -161,6 +177,14 @@ function insertFor(table: OwnedTable, owner: string, refs: Owned): [string, unkn
          values ($2, $1, 'x', 0, 0, 'v1')`,
         [owner, refs.messageId],
       ];
+    case "message_results":
+      return [
+        `insert into message_results (message_id, user_id, kinds, payload)
+         values ($2, $1, '{}', '{"results":[],"steps":[]}')`,
+        [owner, refs.messageId],
+      ];
+    case "connector_grants":
+      return [GRANT_INSERT, [owner]];
   }
 }
 
@@ -287,6 +311,70 @@ describe.each(MODES)("database gate with %s default grants", (defaults) => {
       expect(await errorCode(() => gate.as(user(userA), sql, params))).toBe(PERMISSION_DENIED);
     });
 
+    it("user A reads none of user B's grant columns and none of B's token ciphertexts", async () => {
+      // The granted columns only, as the connector repository reads them: RLS leaves no row.
+      const columns = await gate.as(user(userA), `select ${GRANT_COLUMNS} from connector_grants where user_id = $1`, [userB]);
+      expect(columns.rows).toEqual([]);
+      const byId = await gate.as(user(userA), `select ${GRANT_COLUMNS} from connector_grants where id = $1`, [rowsB.grantId]);
+      expect(byId.rows).toEqual([]);
+      // The only way to read a ciphertext answers nothing for another user's grant.
+      const secrets = await gate.as(user(userA), "select * from public.connector_grant_secrets($1)", [rowsB.grantId]);
+      expect(secrets.rows).toEqual([]);
+      // A token write to another user's grant changes nothing.
+      const stored = await gate.as<{ ok: boolean }>(
+        user(userA),
+        "select public.store_connector_tokens($1, decode(repeat('cd', 40), 'hex'), null, now(), 1::smallint) as ok",
+        [rowsB.grantId],
+      );
+      expect(stored.rows[0]!.ok).toBe(false);
+      const untouched = await gate.admin<{ same: boolean }>(
+        "select refresh_token_ciphertext = decode(repeat('ab', 40), 'hex') as same from connector_grants where id = $1",
+        [rowsB.grantId],
+      );
+      expect(untouched.rows).toEqual([{ same: true }]);
+    });
+
+    it("a signed-in user cannot select a token ciphertext column, even on an own grant", async () => {
+      for (const column of ["refresh_token_ciphertext", "access_token_ciphertext"]) {
+        expect(
+          await errorCode(() => gate.as(user(userA), `select ${column} from connector_grants where id = $1`, [rowsA.grantId])),
+          column,
+        ).toBe(PERMISSION_DENIED);
+      }
+      expect(await errorCode(() => gate.as(user(userA), "select * from connector_grants"))).toBe(PERMISSION_DENIED);
+    });
+
+    it("anon cannot execute the connector token functions", async () => {
+      expect(await errorCode(() => gate.as(anon, "select * from public.connector_grant_secrets($1)", [rowsA.grantId]))).toBe(
+        PERMISSION_DENIED,
+      );
+      expect(
+        await errorCode(() =>
+          gate.as(anon, "select public.store_connector_tokens($1, null, decode(repeat('cd', 40), 'hex'), now(), 1::smallint)", [
+            rowsA.grantId,
+          ]),
+        ),
+      ).toBe(PERMISSION_DENIED);
+    });
+
+    it("user A cannot attach results to user B's reply, also under A's own user ID", async () => {
+      // A reply of B's that has no results yet, so only the ownership rules can refuse the insert.
+      const reply = await gate.admin<{ id: string }>(
+        "insert into messages (conversation_id, user_id, role, content) values ($1, $2, 'assistant', 'b') returning id",
+        [rowsB.conversationId, userB],
+      );
+      const code = await errorCode(() =>
+        gate.as(
+          user(userA),
+          `insert into message_results (message_id, user_id, kinds, payload) values ($1, $2, '{}', '{"results":[],"steps":[]}')`,
+          [reply.rows[0]!.id, userA],
+        ),
+      );
+      // The composite foreign key to messages (id, user_id) refuses it.
+      expect(["23503", PERMISSION_DENIED]).toContain(code);
+      expect(await countOwnedBy("message_results", userA)).toBe(1);
+    });
+
     it("cannot read or write the server-only spend counters", async () => {
       expect(await errorCode(() => gate.as(user(userA), "select * from spend_counters"))).toBe(PERMISSION_DENIED);
       expect(
@@ -329,6 +417,26 @@ describe.each(MODES)("database gate with %s default grants", (defaults) => {
         ]);
         expect(result.rows.map((row) => row.id)).toEqual([own[key]]);
       }
+    });
+
+    it("match_memories with a null mode returns the caller's active memories of both modes and nothing of another user", async () => {
+      const owner = await gate.createUser();
+      const memory = async (mode: string, status: string) =>
+        (
+          await gate.admin<{ id: string }>(
+            `insert into memories (user_id, mode, content, source, status, embedding)
+             values ($1, $2, 'one workspace', 'user', $3, $4) returning id`,
+            [owner, mode, status, EMBEDDING],
+          )
+        ).rows[0]!.id;
+      const personal = await memory("personal", "active");
+      const work = await memory("work", "active");
+      await memory("work", "proposed");
+
+      const own = await gate.as<{ id: string }>(user(owner), "select id from match_memories($1, null, 20)", [EMBEDDING]);
+      expect(own.rows.map((row) => row.id).sort()).toEqual([personal, work].sort());
+      const other = await gate.as<{ id: string }>(user(userA), "select id from match_memories($1, null, 20)", [EMBEDDING]);
+      expect(other.rows.map((row) => row.id)).toEqual([rowsA.memoryId]);
     });
   });
 
@@ -457,8 +565,43 @@ describe.each(MODES)("database gate with %s default grants", (defaults) => {
       );
       await as("update reminders set title = 'r2', due_at = now(), status = 'done', mode = 'work' where id = $1", [reminder]);
       const proposal = await propose(gate, owner, TASK);
+      // Workflow results for a reply (decision 0015): one insert after the reply, read back with the conversation.
+      await as(
+        `insert into message_results (message_id, user_id, kinds, payload)
+         values ($1, $2, '{flights,calendar}', '{"results":[],"steps":[{"id":"flights.search","label":"Searched","status":"done"}]}')`,
+        [message, owner],
+      );
+      const read = await as("select message_id, payload from message_results where user_id = $1 and message_id in ($2)", [owner, message]);
+      expect(read.rows).toHaveLength(1);
+      // Google grant (decision 0016): insert, the granted column updates, both token functions, then delete.
+      const grant = await id(`${GRANT_INSERT} returning id`, [owner]);
+      await as(
+        "update connector_grants set status = 'needs_reconnect', scopes = array['openid', 'email'], last_used_at = now(), account_email = 'new@example.com' where id = $1",
+        [grant],
+      );
+      await as("update connector_grants set status = 'active', access_token_expires_at = now() where id = $1", [grant]);
+      const listed = await as(`select ${GRANT_COLUMNS} from connector_grants where user_id = $1 and provider = 'google'`, [owner]);
+      expect(listed.rows).toHaveLength(1);
+      const stored = await as<{ ok: boolean }>(
+        "select public.store_connector_tokens($1, decode(repeat('cd', 40), 'hex'), null, now(), 1::smallint) as ok",
+        [grant],
+      );
+      expect(stored.rows[0]!.ok).toBe(true);
+      const kept = await as<{ ok: boolean }>(
+        "select public.store_connector_tokens($1, null, decode(repeat('ef', 40), 'hex'), now() + interval '1 hour', 1::smallint) as ok",
+        [grant],
+      );
+      expect(kept.rows[0]!.ok).toBe(true);
+      const secrets = await as<{ id: string; key_version: number; refresh_token_ciphertext: unknown; access_token_ciphertext: unknown }>(
+        "select * from public.connector_grant_secrets($1)",
+        [grant],
+      );
+      expect(secrets.rows).toHaveLength(1);
+      expect(secrets.rows[0]).toMatchObject({ id: grant, key_version: 1 });
+      expect(secrets.rows[0]!.refresh_token_ciphertext).not.toBeNull();
+      expect(secrets.rows[0]!.access_token_ciphertext).not.toBeNull();
 
-      for (const table of ["conversations", "messages", "context_records", "tasks", "memories", "documents", "document_chunks", "reminders", "action_proposals", "action_log"]) {
+      for (const table of ["conversations", "messages", "context_records", "tasks", "memories", "documents", "document_chunks", "reminders", "action_proposals", "action_log", "message_results", "connector_grants"]) {
         const rows = await as<{ n: number }>(`select count(*)::int as n from ${table}`);
         expect(rows.rows[0]!.n, table).toBeGreaterThan(0);
       }
@@ -476,9 +619,14 @@ describe.each(MODES)("database gate with %s default grants", (defaults) => {
       await as("delete from memories where id = $1", [memory]);
       await as("delete from reminders where id = $1", [reminder]);
       await as("delete from documents where id = $1", [document]);
+      const removed = await as("delete from connector_grants where id = $1", [grant]);
+      expect(removed.affectedRows).toBe(1);
       await as("delete from conversations where id = $1", [conversation]);
       expect(await countOwnedBy("conversations", owner)).toBe(0);
       expect(await countOwnedBy("document_chunks", owner)).toBe(0);
+      // Results go with their reply.
+      expect(await countOwnedBy("message_results", owner)).toBe(0);
+      expect(await countOwnedBy("connector_grants", owner)).toBe(0);
     });
   });
 

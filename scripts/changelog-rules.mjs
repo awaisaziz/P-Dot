@@ -2,7 +2,8 @@
 // Dated sections are not checked: entries from before this check use an older shape.
 
 const REPO = "https://github.com/PATELOM925/P-Dot";
-const ACCEPTED_LINK = /^https:\/\/github\.com\/PATELOM925\/P-Dot\/(?:pull\/\d+|commit\/[0-9a-fA-F]{7,40})$/;
+// The team repository, and Awais Aziz's fork, where work lands on main without a pull request.
+const ACCEPTED_LINK = /^https:\/\/github\.com\/(?:PATELOM925|awaisaziz)\/P-Dot\/(?:pull\/\d+|commit\/[0-9a-fA-F]{7,40})$/;
 const TITLE = /^- \*\*(.+?)\*\*/;
 const LABEL = /\b(?:Problem|Resolution):/;
 const HAS_TEXT = /[\p{L}\p{N}]/u;

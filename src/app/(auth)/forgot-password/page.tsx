@@ -9,7 +9,7 @@ export default function ForgotPasswordPage() {
   return (
     <>
       <h1>Reset your password</h1>
-      <p className="muted">Enter your account email and we will send you a link to choose a new password.</p>
+      <p className="muted">Enter your email and we will send a link to choose a new password.</p>
       <AuthForm
         action={requestPasswordResetAction}
         submitLabel="Send reset link"

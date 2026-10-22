@@ -91,6 +91,9 @@ If `npm run check` fails, the build stops and nothing is deployed.
 | `SITE_URL` | Runtime variable | `wrangler.jsonc` (`https://pdot.iampatelom.com`) |
 | `NEBIUS_BASE_URL`, `CHAT_REQUESTS_PER_WINDOW`, `CHAT_WINDOW_SECONDS`; the model routing settings `NEBIUS_FAST_MODELS`, `NEBIUS_STANDARD_MODELS`, `NEBIUS_HEAVY_MODELS`, `NEBIUS_VISION_MODELS`, `NEBIUS_MAX_OUTPUT_TOKENS`, `NEBIUS_STANDARD_MAX_OUTPUT_TOKENS`, `NEBIUS_HEAVY_MAX_OUTPUT_TOKENS`, `NEBIUS_HEAVY_THINKING_BUDGET`, `NEBIUS_HEDGE_AFTER_MS` ([decision 0007](decisions/0007-model-routing.md)); and the spend caps `NEBIUS_DAILY_CAP_USD`, `NEBIUS_TOTAL_CAP_USD`, `NEBIUS_USER_DAILY_CAP_USD`, `TAVILY_DAILY_CREDITS`, `TAVILY_MONTHLY_CREDITS`, `TAVILY_USER_DAILY_CREDITS` ([decision 0006](decisions/0006-global-spend-guard.md)) | Runtime variables. The code has a default for each. `wrangler.jsonc` sets the routing settings (the same values as the defaults) and each cap. `NEBIUS_MODEL` is no longer read. | `wrangler.jsonc`, in **both** `vars` (production) and `previews.vars` (Previews), changed through a pull request. Previews do not get top-level `vars` or dashboard variables. `tests/unit/wrangler-config.test.ts` fails if the two lists have different names. Dashboard variables (Workers & Pages → `pdot` → Settings → Variables and Secrets) are kept on deploy by `keep_vars: true`, but they apply to production only. |
 | `NEBIUS_API_KEY`, `TAVILY_API_KEY` | Runtime secrets | `npx wrangler secret put NAME` (owner only) |
+| `GOOGLE_CLIENT_ID`, `CONNECTOR_TOKEN_KEY_VERSION` (default `1`), `CONNECTOR_ALLOWED_USER_IDS` (comma-separated user IDs, or `*`; empty means nobody) | Runtime variables for the Google connector ([decision 0016](decisions/0016-google-connectors.md)). Not secrets; on the allow list. | Dashboard variable (production only) or `wrangler.jsonc` `vars`. Leave them out of `previews.vars`. |
+| `GOOGLE_CLIENT_SECRET`, `CONNECTOR_TOKEN_KEYS` (JSON `{"1":"<base64 of 32 random bytes>"}`) | Runtime secrets for the Google connector | `npx wrangler secret put NAME` (owner only). **Never** in the Preview base config. |
+| `TAVILY_KEYLESS` | Development only: lets `npm run dev` use Tavily's keyless access when `TAVILY_API_KEY` is empty | `.env.local` only. It is not on the allow list, so a deploy with it set stops, and the code ignores it when `NODE_ENV` is `production`. |
 
 Rules:
 
@@ -98,6 +101,7 @@ Rules:
 - Never add the Supabase secret key (service role key), a database password or a connection string to the Worker.
 - **The OpenNext build copies every value from `.env`, `.env.local`, `.env.production` and `.env.production.local` (and the `development` versions) into the Worker bundle** (`.open-next/cloudflare/next-env.mjs`). `npm run deploy` and `npm run upload` run `scripts/check-worker-env.mjs` after the build. It stops the deploy if any variable that is not on its allow list has a value in that file. The allow list is in `scripts/worker-env-rules.mjs`: the two public Supabase values, `SITE_URL`, the Nebius and chat-limit settings, and the spend caps. A unit test fails if a name in `wrangler.jsonc` `vars` is not on it. Keys, passwords and connection strings are never on it. To add a non-secret setting, add its name there through a pull request. Workers Builds has no `.env` file, so this problem does not occur there.
 - Previews do not get the production secrets. They use the `previews` block in `wrangler.jsonc` for variables, and the Preview base config for secrets (`npx wrangler preview base-config secret put NAME`, owner only). Until the owner adds them, chat in a preview says "This service is not configured yet."
+- **Google connector secrets never go into the Preview base config.** Previews use the production database, so a branch holding `CONNECTOR_TOKEN_KEYS` could decrypt production users' Google tokens. Without them, connectors in a Preview report "not configured" and the start route refuses any host other than `SITE_URL`'s.
 
 ## Previews: what to know
 
@@ -137,6 +141,11 @@ The memory hardening ships this way:
 
 Between steps 1 and 3, the older code can still write a second log row for a change, and a user can still move a proposal forward with the older update grant. Only a proposal with `decided_by_function = true` is a record of an action that the database ran; any other outcome is what a caller wrote (decision 0009).
 
+The agentic workspace (decisions 0014, 0015, 0016, branch `awais/agentic-workspace`) adds three additive migrations, `20261022000000_one_workspace.sql`, `20261022000500_message_results.sql` and `20261022001000_connector_grants.sql`. No contract step follows. The code tolerates them missing (similarity search asks for each saved mode; a missing `message_results` or `connector_grants` table reads as "no results" and "no grant"), but the expand rule above still applies:
+
+1. **Database (expand):** one pull request with only the three migrations, their lines in `tests/integration/frozen-migrations.sha256` and the gate changes. Merge it and let it deploy on its own. Check: in the Supabase dashboard, `public.message_results`, `public.connector_grants`, `public.store_connector_tokens` and `public.connector_grant_secrets` exist.
+2. **Code:** the rest of the branch. Merge after check 1. The migrations must apply in timestamp order, so do not merge anything with a newer migration timestamp between the two steps.
+
 ## One-time setup (owner only)
 
 These steps need the owner's Cloudflare or Supabase account. They are not done yet unless this list says so.
@@ -162,6 +171,20 @@ These steps need the owner's Cloudflare or Supabase account. They are not done y
    Changes to base secrets apply only to Previews created after the change.
 5. **Supabase Auth URL configuration** (Authentication → URL Configuration): Site URL `https://pdot.iampatelom.com`; redirect URLs `https://pdot.iampatelom.com/**` and `http://localhost:3000/**`. Done on 2026-10-19. The free plan does not allow email template changes without custom SMTP, so the templates from the README "Setup" section are not applied yet.
 6. **Email sending.** The default Supabase email service sends only to members of the Supabase organization's team, and about 2 messages each hour. Before other people sign up, either add them to the Supabase team, create their accounts in the dashboard (Authentication → Users → Add user, "Auto Confirm User"), or set up custom SMTP. On 2026-10-19 "Confirm email" was turned off for the hackathon, so sign-up works without an email. Password reset emails still reach only team members.
+
+7. **Google connector** ([decision 0016](decisions/0016-google-connectors.md); optional, connectors stay off without it).
+   - In Google Cloud Console, create an OAuth client of type **Web application** in its own project, separate from any Supabase Google sign-in client. Authorized redirect URIs: `https://pdot.iampatelom.com/api/connectors/google/callback` and, for local runs, `http://localhost:3000/api/connectors/google/callback`. On the consent screen add the scopes `calendar.readonly`, `drive.readonly`, `openid` and `email`, and keep the app in **Testing** with your own account as a test user. In Testing, Google ends access after 7 days, so the Connectors page asks to reconnect weekly. `drive.readonly` is a restricted scope: publishing the app to everyone needs Google's verification and a yearly CASA security assessment, or a move to `drive.file` with the Picker.
+   - Generate the token key and set the secrets:
+
+     ```bash
+     node -e "console.log(JSON.stringify({1: require('crypto').randomBytes(32).toString('base64')}))"
+     npx wrangler secret put CONNECTOR_TOKEN_KEYS
+     npx wrangler secret put GOOGLE_CLIENT_SECRET
+     ```
+
+     Then set `GOOGLE_CLIENT_ID` and `CONNECTOR_ALLOWED_USER_IDS` (your own user ID from Supabase Authentication → Users) as dashboard variables. Keep the allow list to your own account until Zero Data Retention is confirmed on the Nebius account: by default Nebius keeps inputs for speculative decoding, and Google's Limited Use policy covers every test user.
+   - Rotation: add `"2"` to `CONNECTOR_TOKEN_KEYS`, then set `CONNECTOR_TOKEN_KEY_VERSION=2`. Rows move to version 2 on their next token write. Remove version 1 only when no row has `key_version = 1`. If a key leaks: rotate, then ask every user to reconnect.
+   - Deleting an account removes its stored Google token without revoking it at Google; users can remove access at myaccount.google.com/permissions.
 
 ## Manual deploy (owner only, fallback)
 

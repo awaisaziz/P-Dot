@@ -1,15 +1,9 @@
 import type { ChatStreamEvent } from "@/types/api";
 
-const EVENT_TYPES = new Set(["start", "search", "thought", "delta", "title", "done", "error"]);
+const EVENT_TYPES = new Set(["start", "search", "thought", "step", "result", "delta", "title", "done", "error"]);
 
-function isChatStreamEvent(value: unknown): value is ChatStreamEvent {
-  return (
-    typeof value === "object" &&
-    value !== null &&
-    "type" in value &&
-    typeof value.type === "string" &&
-    EVENT_TYPES.has(value.type)
-  );
+function hasStringType(value: unknown): value is { type: string } {
+  return typeof value === "object" && value !== null && "type" in value && typeof value.type === "string";
 }
 
 export class StreamFormatError extends Error {
@@ -19,7 +13,11 @@ export class StreamFormatError extends Error {
   }
 }
 
-/** Parses a newline-delimited JSON response body into chat stream events. */
+/**
+ * Parses a newline-delimited JSON response body into chat stream events.
+ * An event with an unknown string type is skipped, so a newer server does not
+ * break an older tab. Malformed JSON or a missing type still throws.
+ */
 export async function* readChatStream(body: ReadableStream<Uint8Array>): AsyncGenerator<ChatStreamEvent> {
   const reader = body.getReader();
   const decoder = new TextDecoder();
@@ -34,8 +32,9 @@ export async function* readChatStream(body: ReadableStream<Uint8Array>): AsyncGe
     } catch {
       throw new StreamFormatError();
     }
-    if (!isChatStreamEvent(value)) throw new StreamFormatError();
-    return value;
+    if (!hasStringType(value)) throw new StreamFormatError();
+    if (!EVENT_TYPES.has(value.type)) return null;
+    return value as ChatStreamEvent;
   };
 
   try {

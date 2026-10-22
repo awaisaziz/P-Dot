@@ -10,17 +10,12 @@ import { useAutoApprovals } from "@/features/actions/useAutoApprovals";
 import { useProposals } from "@/features/actions/useProposals";
 import { summarizeConversation } from "@/features/memory/api";
 import { useMemorySuggestions, type MemorySuggestion } from "@/features/memory/useMemorySuggestions";
+import { markCappedReads } from "@/features/results/format";
+import { ResultList } from "@/features/results/ResultList";
 import { MAX_MESSAGE_CHARS } from "@/lib/limits";
-import type {
-  ActionProposalDTO,
-  ChatRequest,
-  ConversationSummary,
-  Effort,
-  Mode,
-  ModelTier,
-  SourceRef,
-  WebSearchStatus,
-} from "@/types/api";
+import type { ActionProposalDTO, ConversationSummary, Effort, ModelTier, SourceRef, WebSearchStatus } from "@/types/api";
+import type { ConnectorsResponse } from "@/types/connectors";
+import type { MessageResult } from "@/types/workflows";
 import {
   ApiError,
   deleteConversation,
@@ -29,18 +24,37 @@ import {
   postChat,
   renameConversation,
 } from "./api";
+import { fetchConnectorsOnce, googleLinkState, setGoogleChip, useGoogleChip } from "./connectors";
+import { GoogleToolOption } from "./GoogleToolOption";
+import { autoTurnsAfterDone, readsOutside, withTaintedReasons, withTaintedTurn, withoutTurn } from "./auto-turns";
 import { MessageItem, SearchNotice, SourceList, type UiMessage } from "./MessageView";
+import { RunPanel } from "./RunPanel";
 import { TurnExtras } from "./TurnExtras";
 import { effortAfterAccept } from "./effort";
 import { placeBySource, placeByTime } from "./placement";
+import { buildChatRequest, requestTimeZone } from "./request";
+import { finishedReply, liveReplyParts, planStep, runPanelVisible, upsertStep, type RunSteps } from "./run";
+import { STARTERS_HINT, chatStarters } from "./starters";
 import { readChatStream } from "./stream";
 import { appendDictation, useDictation } from "./useDictation";
+
+/** Steps and results of a reply whose written answer failed or was stopped. Shown, not saved. */
+interface KeptRun {
+  steps: RunSteps;
+  results: MessageResult[];
+  runKey: number;
+}
 
 interface StreamingReply {
   text: string;
   search: { status: Exclude<WebSearchStatus, "off">; sources: SourceRef[]; message?: string } | null;
   /** The tier from the start event, before the first token. */
   tier?: ModelTier;
+  /** Step lines by id, in arrival order; the model's plan lines are among them. */
+  steps: RunSteps;
+  results: MessageResult[];
+  /** Changes per request, so each reply gets a fresh run panel. */
+  runKey: number;
 }
 
 const EFFORT_OPTIONS: { value: Effort; label: string; title: string }[] = [
@@ -48,7 +62,7 @@ const EFFORT_OPTIONS: { value: Effort; label: string; title: string }[] = [
   {
     value: "deep",
     label: "Think harder",
-    title: "Use the strongest model for the next message only. It is slower and uses more of the daily limit.",
+    title: "Strongest model for the next message only; slower and uses more of your daily limit.",
   },
 ];
 
@@ -64,30 +78,51 @@ function isAbort(error: unknown): boolean {
   return error instanceof DOMException && error.name === "AbortError";
 }
 
-const EMPTY_HINTS: Record<Mode, string> = {
-  personal: "Ask about meals, gifts, family plans, errands or everyday choices.",
-  work: "Ask about meetings, email, code, tasks, deadlines or work writing.",
-};
+/** Where keyboard focus is inside the live reply, so the saved reply can take it back. Null when it is elsewhere. */
+function focusInside(container: HTMLElement | null): { key: string | null; inSteps: boolean } | null {
+  const active = typeof document === "undefined" ? null : document.activeElement;
+  if (!container || !(active instanceof HTMLElement) || !container.contains(active)) return null;
+  return { key: active.dataset.focusKey ?? null, inSteps: active.closest(".run-steps") !== null };
+}
+
+/** The same control in the saved reply, else its run header, else the reply itself. */
+function focusSavedReply(list: HTMLElement | null, messageId: string, key: string | null) {
+  const article = list?.querySelector<HTMLElement>(`[data-message-id="${CSS.escape(messageId)}"]`);
+  if (!article) return;
+  const visible = (element: HTMLElement | null) => (element && !element.closest("[hidden]") ? element : null);
+  const target =
+    visible(key ? article.querySelector<HTMLElement>(`[data-focus-key="${CSS.escape(key)}"]`) : null) ??
+    visible(article.querySelector<HTMLElement>(".run-header"));
+  if (target) {
+    target.focus();
+    return;
+  }
+  article.tabIndex = -1;
+  article.focus();
+}
 
 export function ChatWorkspace({
   initialConversationId,
-  mode,
+  initialDraft = null,
 }: {
   initialConversationId: string | null;
-  mode: Mode;
+  /** From `?q=` (a starter on Today): placed in the message box once, never sent on its own. */
+  initialDraft?: string | null;
 }) {
   const [conversations, setConversations] = useState<ConversationSummary[]>([]);
   const [listState, setListState] = useState<"loading" | "ready" | "error">("loading");
   const [activeId, setActiveId] = useState<string | null>(initialConversationId);
   const [messages, setMessages] = useState<UiMessage[]>([]);
   const [loadingMessages, setLoadingMessages] = useState(initialConversationId !== null);
-  const [draft, setDraft] = useState("");
+  const [draft, setDraft] = useState(initialDraft ?? "");
   const [webSearch, setWebSearch] = useState(false);
   const [effort, setEffort] = useState<Effort>("auto");
   // Counts the user's clicks on the effort switch, so a late "start" event cannot undo a newer choice.
   const effortVersion = useRef(0);
   const [sending, setSending] = useState(false);
   const [streaming, setStreaming] = useState<StreamingReply | null>(null);
+  // What a failed or stopped reply had already found, so a paid check does not vanish with the error.
+  const [keptRun, setKeptRun] = useState<KeptRun | null>(null);
   const [error, setError] = useState<ErrorState | null>(null);
   const [status, setStatus] = useState("");
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
@@ -102,6 +137,20 @@ export function ChatWorkspace({
   // "Ask first" or "Auto". Auto acts only on replies to messages sent while it was on (their user message IDs).
   const approvalMode = useApprovalMode();
   const [autoTurns, setAutoTurns] = useState<ReadonlySet<string>>(() => new Set());
+  // Turns whose reply read web pages or Google: Auto runs nothing for them (decision 0015).
+  // The ref is the latest set, for a reply that ends after a Retry of the same turn.
+  const [taintedTurns, setTaintedTurns] = useState<ReadonlySet<string>>(() => new Set());
+  const taintedRef = useRef<ReadonlySet<string>>(taintedTurns);
+  // The user's open or close of the live run panel, kept for the saved reply. Null: not touched.
+  const liveRunChoice = useRef<boolean | null>(null);
+  // The live reply, and the saved reply that should take its keyboard focus when it lands.
+  const liveReplyRef = useRef<HTMLElement>(null);
+  const focusAfterDone = useRef<{ messageId: string; key: string | null } | null>(null);
+  // Google: the connection from GET /api/connectors, and the chip's choice on this device.
+  const [connectors, setConnectors] = useState<ConnectorsResponse | "loading" | "error">("loading");
+  const googleChip = useGoogleChip();
+  const google = googleLinkState(connectors);
+  const googleOn = googleChip && google.state === "connected";
 
   const dictation = useDictation(
     useCallback((text: string) => setDraft((current) => appendDictation(current, text, MAX_MESSAGE_CHARS)), []),
@@ -113,6 +162,7 @@ export function ChatWorkspace({
   const messagesRef = useRef<UiMessage[]>([]);
   const loadSeq = useRef(0);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const listRef = useRef<HTMLDivElement>(null);
   const endRef = useRef<HTMLDivElement>(null);
 
   const redirectIfUnauthorized = useCallback(
@@ -131,7 +181,6 @@ export function ChatWorkspace({
   const suggestionsRefresh = `${activeId ?? ""}:${suggestionsKey}`;
   const actions = useProposals({ refreshKey: suggestionsRefresh, enabled: activeId !== null, onUnauthorized: goToLogin });
   const memorySuggestions = useMemorySuggestions({
-    mode,
     refreshKey: suggestionsRefresh,
     enabled: activeId !== null,
     onUnauthorized: goToLogin,
@@ -152,7 +201,7 @@ export function ChatWorkspace({
           if (err instanceof ApiError && err.status === 404) {
             setActiveId(null);
             syncUrl(null);
-            setError({ message: "That conversation was not found. It may have been deleted." });
+            setError({ message: "That conversation was not found; it may have been deleted." });
           } else {
             setError({ message: err instanceof Error ? err.message : "Could not load the conversation." });
           }
@@ -164,7 +213,7 @@ export function ChatWorkspace({
 
   useEffect(() => {
     let cancelled = false;
-    fetchConversations(mode)
+    fetchConversations()
       .then((list) => {
         if (cancelled) return;
         setConversations(list);
@@ -177,7 +226,33 @@ export function ChatWorkspace({
     return () => {
       cancelled = true;
     };
-  }, [initialConversationId, loadMessages, mode, redirectIfUnauthorized]);
+  }, [initialConversationId, loadMessages, redirectIfUnauthorized]);
+
+  // Whether Google is connected, once per page load. A failure leaves the Google row disabled.
+  useEffect(() => {
+    let cancelled = false;
+    fetchConnectorsOnce().then(
+      (response) => {
+        if (!cancelled) setConnectors(response);
+      },
+      () => {
+        if (!cancelled) setConnectors("error");
+      },
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // A draft from `?q=` is placed once: the URL drops it, so a reload or Back does not bring it again.
+  useEffect(() => {
+    if (initialDraft === null) return;
+    syncUrl(initialConversationId);
+    const input = inputRef.current;
+    if (!input) return;
+    input.focus();
+    input.setSelectionRange(input.value.length, input.value.length);
+  }, [initialDraft, initialConversationId]);
 
   useEffect(() => {
     endRef.current?.scrollIntoView({ block: "end" });
@@ -185,6 +260,12 @@ export function ChatWorkspace({
 
   useEffect(() => {
     messagesRef.current = messages;
+    // The live reply was replaced by the saved one: give focus back where the user had it.
+    const pending = focusAfterDone.current;
+    if (pending) {
+      focusAfterDone.current = null;
+      focusSavedReply(listRef.current, pending.messageId, pending.key);
+    }
   }, [messages]);
 
   /**
@@ -205,11 +286,21 @@ export function ChatWorkspace({
     setActiveId(id);
     setMessages([]);
     setError(null);
+    setKeptRun(null);
     setConfirmDeleteId(null);
     setShowList(false);
     setLoadingMessages(true);
     syncUrl(id);
     void loadMessages(id);
+  }
+
+  /** Records a tainted turn: Auto never runs its proposals, from this attempt or a Retry of it. */
+  function markTainted(turn: string | null, readOutside: boolean) {
+    const next = withTaintedTurn(taintedRef.current, turn, readOutside);
+    if (next === taintedRef.current || !turn) return;
+    taintedRef.current = next;
+    setTaintedTurns(next);
+    setAutoTurns((turns) => withoutTurn(turns, turn));
   }
 
   function startNewConversation() {
@@ -220,47 +311,82 @@ export function ChatWorkspace({
     setActiveId(null);
     setMessages([]);
     setError(null);
+    setKeptRun(null);
     setLoadingMessages(false);
     setShowList(false);
     syncUrl(null);
     inputRef.current?.focus();
   }
 
-  async function submit(action: "send" | "retry") {
+  /**
+   * Sends the draft, retries the last message, or (with `override`) sends a
+   * message from a button such as Re-check without touching the draft.
+   */
+  async function submit(action: "send" | "retry", override?: string) {
     if (sending) return;
-    const text = draft.trim();
+    const fromDraft = override === undefined;
+    const text = (override ?? draft).trim();
     if (action === "send" && (!text || text.length > MAX_MESSAGE_CHARS)) return;
-    if (action === "retry" && !activeId) return;
-
-    const body: ChatRequest =
-      action === "send"
-        ? { action, message: text, webSearch, effort, ...(activeId ? { conversationId: activeId } : { mode }) }
-        : { action, conversationId: activeId!, webSearch, effort };
+    const body = buildChatRequest({
+      action,
+      message: text,
+      conversationId: activeId,
+      webSearch,
+      effort,
+      timeZone: requestTimeZone(),
+      google: googleOn,
+    });
+    if (!body) return;
 
     const sentEffort = { effort, version: effortVersion.current };
     // The mode when the user pressed Send decides whether Auto may act on this reply.
     const sentInAuto = approvalMode === "auto";
     const controller = new AbortController();
     abortRef.current = controller;
-    const tempId = `pending-${Date.now()}`;
+    const startedAt = Date.now();
+    const tempId = `pending-${startedAt}`;
     let accepted = false;
     let finished = false;
     let conversationId = activeId;
+    let userMessageId: string | null = null;
+    // Kept here as well as in state, so `done` can save them without reading state.
+    let liveSteps: RunSteps = new Map();
+    let liveResults: MessageResult[] = [];
+    let plans = 0;
+    const announced = new Set<string>();
+    setKeptRun(null);
+    /** Keeps what the reply found when its written answer fails or is stopped. */
+    const keepRun = () => {
+      if (runPanelVisible([...liveSteps.values()], liveResults, false)) {
+        setKeptRun({ steps: liveSteps, results: liveResults, runKey: startedAt });
+      }
+    };
+    // Set by the first workflow or Google read, so a reply that ends without `done` still taints its turn.
+    let readOutside = false;
+    liveRunChoice.current = null;
 
     const restoreDraft = () => {
       if (action !== "send") return;
       setMessages((current) => current.filter((message) => message.id !== tempId));
-      setDraft((current) => (current ? current : text));
+      if (fromDraft) setDraft((current) => (current ? current : text));
+    };
+    const showRun = () =>
+      setStreaming((current) => (current ? { ...current, steps: liveSteps, results: liveResults } : current));
+    // The live reply is about to go with an error: keep focus in the message box.
+    const keepFocusOnError = () => {
+      if (focusInside(liveReplyRef.current)) inputRef.current?.focus();
     };
 
     setSending(true);
     setError(null);
-    setStreaming({ text: "", search: null });
+    setStreaming({ text: "", search: null, steps: liveSteps, results: liveResults, runKey: startedAt });
     setStatus("Sending…");
     if (action === "send") {
-      // Stop dictating, so words heard after Send do not land in the next message.
-      dictation.cancel();
-      setDraft("");
+      if (fromDraft) {
+        // Stop dictating, so words heard after Send do not land in the next message.
+        dictation.cancel();
+        setDraft("");
+      }
       setMessages((current) => [
         ...current,
         {
@@ -270,7 +396,7 @@ export function ChatWorkspace({
           webSearch: "off",
           sources: [],
           route: null,
-          createdAt: new Date().toISOString(),
+          createdAt: new Date(startedAt).toISOString(),
           pending: true,
         },
       ]);
@@ -279,11 +405,12 @@ export function ChatWorkspace({
     try {
       const stream = await postChat(body, controller.signal);
       for await (const event of readChatStream(stream)) {
+        if (readsOutside(event)) readOutside = true;
         switch (event.type) {
           case "start":
             accepted = true;
             conversationId = event.conversation.id;
-            if (sentInAuto) setAutoTurns((turns) => new Set(turns).add(event.userMessage.id));
+            userMessageId = event.userMessage.id;
             // "Think harder" applies to one message, so a forgotten switch does not keep using the heavy tier.
             setEffort((current) => effortAfterAccept(sentEffort, { effort: current, version: effortVersion.current }));
             setActiveId(event.conversation.id);
@@ -292,32 +419,40 @@ export function ChatWorkspace({
             if (action === "send") {
               setMessages((current) => current.map((m) => (m.id === tempId ? event.userMessage : m)));
             }
-            setStreaming((current) => ({
-              text: current?.text ?? "",
-              search: current?.search ?? null,
-              tier: event.route.tier,
-            }));
+            setStreaming((current) => (current ? { ...current, tier: event.route.tier } : current));
             setStatus(webSearch ? "Searching the web…" : "P-Dot is replying…");
             break;
           case "search":
-            setStreaming((current) => ({
-              text: current?.text ?? "",
-              search: { status: event.status, sources: event.sources, message: event.message },
-              tier: current?.tier,
-            }));
-            setStatus(event.status === "used" ? "Web search complete. P-Dot is replying…" : (event.message ?? ""));
+            setStreaming((current) =>
+              current
+                ? { ...current, search: { status: event.status, sources: event.sources, message: event.message } }
+                : current,
+            );
+            setStatus(event.status === "used" ? "Web search done, replying…" : (event.message ?? ""));
             break;
           case "delta":
-            setStreaming((current) => ({
-              text: (current?.text ?? "") + event.text,
-              search: current?.search ?? null,
-              tier: current?.tier,
-            }));
+            setStreaming((current) => (current ? { ...current, text: current.text + event.text } : current));
             break;
-          case "thought":
-            // What P-Dot said before using a tool was its plan, not the reply: show it as status.
-            setStreaming((current) => ({ text: "", search: current?.search ?? null, tier: current?.tier }));
+          case "thought": {
+            // What P-Dot said before using a tool was its plan, not the reply: it becomes a step line.
+            const plan = planStep(plans++, event.text);
+            if (plan) liveSteps = upsertStep(liveSteps, plan);
+            setStreaming((current) => (current ? { ...current, text: "", steps: liveSteps } : current));
             setStatus(event.text);
+            break;
+          }
+          case "step":
+            liveSteps = upsertStep(liveSteps, event.step);
+            showRun();
+            // One announcement per step, never per update.
+            if (!announced.has(event.step.id)) {
+              announced.add(event.step.id);
+              setStatus(event.step.label);
+            }
+            break;
+          case "result":
+            liveResults = [...liveResults, event.result];
+            showRun();
             break;
           case "title":
             setConversations((list) => list.map((c) => (c.id === conversationId ? { ...c, title: event.title } : c)));
@@ -325,7 +460,29 @@ export function ChatWorkspace({
           case "done": {
             finished = true;
             const count = messagesRef.current.length + 1;
-            setMessages((current) => [...current, { ...event.message, truncated: event.truncated }]);
+            const focus = focusInside(liveReplyRef.current);
+            const message: UiMessage = {
+              ...event.message,
+              truncated: event.truncated,
+              ...finishedReply(event.message.results, {
+                steps: liveSteps,
+                results: liveResults,
+                elapsedMs: Date.now() - startedAt,
+                // A step the user had focused stays visible.
+                open: liveRunChoice.current ?? (focus?.inSteps ? true : null),
+              }),
+            };
+            if (focus) focusAfterDone.current = { messageId: message.id, key: focus.key };
+            setMessages((current) => [...current, message]);
+            if (userMessageId) {
+              const turn = userMessageId;
+              // A reply that read web pages or Google is tainted: Auto never runs its proposals.
+              const autoAllowed = event.autoActions !== false;
+              markTainted(turn, !autoAllowed);
+              // An earlier attempt at this turn (failed or stopped, then retried) may be tainted too.
+              const tainted = taintedRef.current;
+              setAutoTurns((turns) => autoTurnsAfterDone(turns, turn, { sentInAuto, autoAllowed, tainted }));
+            }
             setStreaming(null);
             setSuggestionsKey((key) => key + 1);
             notifyActionsChanged();
@@ -336,6 +493,10 @@ export function ChatWorkspace({
           }
           case "error":
             finished = true;
+            // Proposals made before the failure stay; a Retry must not let Auto run them.
+            markTainted(userMessageId, readOutside);
+            keepFocusOnError();
+            keepRun();
             setStreaming(null);
             setError({ message: event.message });
             setStatus("");
@@ -343,17 +504,24 @@ export function ChatWorkspace({
         }
       }
       if (!finished) {
+        markTainted(userMessageId, readOutside);
+        keepFocusOnError();
+        keepRun();
         setStreaming(null);
-        setError({ message: "The reply was interrupted. Please retry." });
+        setError({ message: "The reply was interrupted; please retry." });
       }
     } catch (err) {
+      // Stopped or cut off: the same rule as an error event.
+      if (!finished) markTainted(userMessageId, readOutside);
+      keepFocusOnError();
+      if (!finished) keepRun();
       setStreaming(null);
       if (isAbort(err)) {
         if (!accepted) restoreDraft();
         setStatus("Stopped.");
       } else if (!redirectIfUnauthorized(err)) {
         if (!accepted) restoreDraft();
-        setError({ message: err instanceof Error ? err.message : "Something went wrong. Please retry." });
+        setError({ message: err instanceof Error ? err.message : "Something went wrong; please retry." });
         setStatus("");
       }
     } finally {
@@ -361,6 +529,19 @@ export function ChatWorkspace({
       if (abortRef.current === controller) abortRef.current = null;
     }
   }
+
+  /** A starter suggestion fills the message box; the user sends it. */
+  function fillDraft(text: string) {
+    setDraft(text);
+    requestAnimationFrame(() => {
+      const input = inputRef.current;
+      if (!input) return;
+      input.focus();
+      input.setSelectionRange(text.length, text.length);
+    });
+  }
+
+  const sendText = (text: string) => void submit("send", text);
 
   function startRename(conversation: ConversationSummary) {
     setConfirmDeleteId(null);
@@ -393,7 +574,7 @@ export function ChatWorkspace({
       if (redirectIfUnauthorized(err)) return;
       // 404 means it is already gone; anything else is a real failure.
       if (!(err instanceof ApiError && err.status === 404)) {
-        setError({ message: "Could not delete the conversation. Please retry." });
+        setError({ message: "Could not delete the conversation; please retry." });
         setDeletingId(null);
         return;
       }
@@ -426,6 +607,12 @@ export function ChatWorkspace({
     onUnauthorized: goToLogin,
   });
   const autoRunning = new Set(auto.running.map((p) => p.id));
+  // In Auto, a waiting proposal from a tainted reply says why it still asks.
+  const askReasons = withTaintedReasons(auto.asks, conversationProposals, messages, taintedTurns, approvalMode);
+  const streamingSteps = streaming ? [...streaming.steps.values()] : [];
+  const streamingResults = streaming ? markCappedReads(streaming.results, streamingSteps) : [];
+  // The first step (a flight check can come before any text) opens the panel and replaces "Thinking…".
+  const live = liveReplyParts({ text: streaming?.text ?? "", steps: streamingSteps, results: streamingResults });
   const placedProposals = placeByTime(messages, conversationProposals);
   const placedSuggestions = placeBySource(messages, memorySuggestions.items);
   const showSuggestions = activeId !== null && !loadingMessages;
@@ -437,7 +624,7 @@ export function ChatWorkspace({
         approvalMode={approvalMode}
         autoRunning={autoRunning}
         autoRan={auto.ran}
-        askReasons={auto.asks}
+        askReasons={askReasons}
         decidedHere={actions.decidedHere}
         onDecided={actions.decided}
         onStale={actions.stale}
@@ -574,35 +761,71 @@ export function ChatWorkspace({
           <h1 className="chat-title">{activeTitle ?? (activeId ? "Conversation" : "New conversation")}</h1>
         </div>
 
-        <div className="message-list">
+        <div className="message-list" ref={listRef}>
           {loadingMessages && <p className="muted">Loading conversation…</p>}
           {!loadingMessages && messages.length === 0 && !streaming && (
             <div className="empty-state">
-              <p>{EMPTY_HINTS[mode]}</p>
-              <p className="muted small">Turn on web search when you want current sources.</p>
+              <span className="empty-mark" aria-hidden="true" />
+              <ul className="chat-starter-list" aria-label="Starter suggestions">
+                {chatStarters(google, googleChip).map((starter) => (
+                  <li key={starter}>
+                    <button type="button" className="chat-starter" onClick={() => fillDraft(starter)}>
+                      {starter}
+                    </button>
+                  </li>
+                ))}
+              </ul>
+              <p className="muted small">{STARTERS_HINT}</p>
             </div>
           )}
           {messages.map((message) => (
             <Fragment key={message.id}>
-              <MessageItem message={message} />
+              <MessageItem message={message} onSend={sendText} busy={sending} />
               {suggestionsFor(placedProposals.byMessage.get(message.id), placedSuggestions.get(message.id))}
             </Fragment>
           ))}
-          {streaming && (
-            <article className="message message-assistant" aria-busy="true">
+          {keptRun && !streaming && (
+            <article className="message message-assistant">
               <p className="message-author">P-Dot</p>
+              <RunPanel
+                key={keptRun.runKey}
+                steps={[...keptRun.steps.values()]}
+                results={keptRun.results}
+                streaming={false}
+                initialOpen
+              />
+              <ResultList results={markCappedReads(keptRun.results, [...keptRun.steps.values()])} />
+              <p className="hint">The written answer did not finish; these steps and results were not saved.</p>
+            </article>
+          )}
+          {streaming && (
+            <article className="message message-assistant" aria-busy="true" ref={liveReplyRef}>
+              <p className="message-author">P-Dot</p>
+              <RunPanel
+                key={streaming.runKey}
+                steps={streamingSteps}
+                results={streamingResults}
+                streaming
+                initialOpen
+                onToggle={(open) => {
+                  liveRunChoice.current = open;
+                }}
+              />
+              <ResultList results={streamingResults} busy />
               {streaming.search && <SearchNotice status={streaming.search.status} message={streaming.search.message} />}
-              <div className="message-content">
-                {streaming.text || (
-                  <span className="muted">
-                    {webSearch && !streaming.search
-                      ? "Searching the web…"
-                      : streaming.tier === "heavy"
-                        ? "Thinking harder…"
-                        : "Thinking…"}
-                  </span>
-                )}
-              </div>
+              {(streaming.text || live.thinking) && (
+                <div className="message-content">
+                  {streaming.text || (
+                    <span className="muted thinking">
+                      {webSearch && !streaming.search
+                        ? "Searching the web…"
+                        : streaming.tier === "heavy"
+                          ? "Thinking harder…"
+                          : "Thinking…"}
+                    </span>
+                  )}
+                </div>
+              )}
               {streaming.search?.status === "used" && <SourceList sources={streaming.search.sources} />}
             </article>
           )}
@@ -658,13 +881,13 @@ export function ChatWorkspace({
             />
             {dictation.listening && (
               <p className="dictation-live">
-                <span role="status">Listening… speak now. Tap the microphone or press Esc to stop.</span>
+                <span role="status">Listening… tap the microphone or press Esc to stop.</span>
                 {/* Not announced: it changes with every word. The settled words go into the message box. */}
                 {dictation.interim && <span className="dictation-interim">“{dictation.interim}”</span>}
               </p>
             )}
             <div className="composer-bar">
-              <div className="tools-anchor">
+              <div className="tools-anchor composer-tools-anchor">
                 {toolsOpen && (
                   <div
                     id="composer-tools"
@@ -678,6 +901,7 @@ export function ChatWorkspace({
                         <span className="hint">Powered by Tavily</span>
                       </span>
                     </label>
+                    <GoogleToolOption link={google} on={googleChip} />
                   </div>
                 )}
                 <button
@@ -708,19 +932,37 @@ export function ChatWorkspace({
                   </button>
                 ))}
               </div>
-              {webSearch && (
-                <button
-                  type="button"
-                  className="chip chip-button"
-                  onClick={() => setWebSearch(false)}
-                  aria-label="Web search with Tavily is on. Turn off."
-                >
-                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
-                    <circle cx="12" cy="12" r="9" />
-                    <path d="M3 12h18M12 3c3 3 3 15 0 18M12 3c-3 3-3 15 0 18" />
-                  </svg>
-                  Web search · Tavily ×
-                </button>
+              {(webSearch || googleOn) && (
+                <span className="composer-chips">
+                  {webSearch && (
+                    <button
+                      type="button"
+                      className="chip chip-button composer-chip"
+                      onClick={() => setWebSearch(false)}
+                      aria-label="Turn off web search (Tavily)"
+                    >
+                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
+                        <circle cx="12" cy="12" r="9" />
+                        <path d="M3 12h18M12 3c3 3 3 15 0 18M12 3c-3 3-3 15 0 18" />
+                      </svg>
+                      Web search <span aria-hidden="true">×</span>
+                    </button>
+                  )}
+                  {googleOn && (
+                    <button
+                      type="button"
+                      className="chip chip-button composer-chip chip-google"
+                      onClick={() => setGoogleChip(false)}
+                      aria-label="Turn off Google (Calendar and Drive)"
+                    >
+                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                        <rect x="4" y="5" width="16" height="15" rx="2" />
+                        <path d="M4 10h16M9 3v4M15 3v4" />
+                      </svg>
+                      Google <span aria-hidden="true">×</span>
+                    </button>
+                  )}
+                </span>
               )}
               <span id="composer-hint" className="hint composer-hint">
                 {draft.length > MAX_MESSAGE_CHARS * 0.9
@@ -769,11 +1011,11 @@ export function ChatWorkspace({
           )}
           {approvalMode === "auto" && (
             <p className="approval-mode-hint small">
-              <strong>Auto is on:</strong> tasks and reminders are added on their own, with Undo. Deleting, memories,
-              outside accounts and private data still ask. <Link href="/settings#approvals">What always asks</Link>
+              <strong>Auto is on:</strong> tasks and reminders are added with Undo; everything else still asks.{" "}
+              <Link href="/settings#approvals">What always asks</Link>
             </p>
           )}
-          <p className="disclaimer">P-Dot is an AI and can make mistakes, so please double-check anything important.</p>
+          <p className="disclaimer">P-Dot can make mistakes; double-check anything important.</p>
         </form>
 
         <p className="visually-hidden" role="status" aria-live="polite">

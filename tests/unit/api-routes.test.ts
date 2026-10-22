@@ -3,8 +3,23 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import { ConfigError } from "@/lib/supabase-config";
 import type { AuthContext } from "@/server/auth/session";
 import { readChatStream } from "@/features/chat/stream";
-import { FakeContextRecords, FakeQuota, FakeSpend, MemoryRepository, TEST_SPEND_CAPS, fakeDeps, testRouting } from "../support/fakes";
+import { bindTavily } from "@/server/assistant/workflows/core";
+import { createGoogleConnector } from "@/server/connectors/google/connector";
+import type { ModelCallRequest } from "@/server/providers/model";
+import type { MessageResultsPayload } from "@/types/workflows";
+import { ALICE_GOOGLE, FakeConnectorDb, FakeGoogle, seedGrant, testConnectorConfig } from "../support/connector-fakes";
+import {
+  FakeContextRecords,
+  FakeMessageResults,
+  FakeQuota,
+  FakeSpend,
+  MemoryRepository,
+  TEST_SPEND_CAPS,
+  fakeDeps,
+  testRouting,
+} from "../support/fakes";
 import { collect } from "../support/streams";
+import { fakeTavilyFetch, ScriptedProvider, textReply, toolReply, type ScriptedReply } from "../support/workflow-fakes";
 import { WriteFaults, describeCase, hasFault, sweepWriteFaults, type SweepCase, type WriteFault } from "../support/write-faults";
 
 vi.mock("@/server/auth/session", () => ({ getAuthContext: vi.fn() }));
@@ -14,11 +29,16 @@ vi.mock("@/server/db/conversations", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/server/db/conversations")>()),
   createConversationRepository: vi.fn(),
 }));
+vi.mock("@/server/db/message-results", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/server/db/message-results")>()),
+  createMessageResultsRepository: vi.fn(),
+}));
 
 const { getAuthContext } = await import("@/server/auth/session");
 const { getAssistantConfig } = await import("@/server/config");
 const { createAssistantDeps } = await import("@/server/assistant/deps");
 const { createConversationRepository } = await import("@/server/db/conversations");
+const { createMessageResultsRepository } = await import("@/server/db/message-results");
 const chatRoute = await import("@/app/api/chat/route");
 const listRoute = await import("@/app/api/conversations/route");
 const itemRoute = await import("@/app/api/conversations/[id]/route");
@@ -50,6 +70,7 @@ function itemRequest(method: string, headers: Record<string, string> = {}) {
 const params = (id: string) => ({ params: Promise.resolve({ id }) });
 
 let repo: MemoryRepository;
+let storedResults: FakeMessageResults;
 
 beforeEach(() => {
   vi.spyOn(console, "info").mockImplementation(() => {});
@@ -57,6 +78,8 @@ beforeEach(() => {
   vi.spyOn(console, "error").mockImplementation(() => {});
   repo = new MemoryRepository();
   vi.mocked(createConversationRepository).mockReturnValue(repo);
+  storedResults = new FakeMessageResults();
+  vi.mocked(createMessageResultsRepository).mockReturnValue(storedResults);
   vi.mocked(getAssistantConfig).mockReturnValue({
     nebius: { apiKey: "k", baseUrl: "https://nebius.test/v1" },
     ollama: { baseUrl: "http://127.0.0.1:11434/v1", embeddingModel: null },
@@ -169,9 +192,65 @@ describe("POST /api/chat", () => {
   });
 });
 
+/** A flight search reply: the code-run flight check on a fake Tavily, then a text answer (decision 0015). */
+const FLIGHT_MESSAGE = "Find me cheap flights from London to New York on 12 November";
+const ROME2RIO = "https://www.rome2rio.com/s/London/New-York";
+
+function flightModel(): ScriptedProvider {
+  return new ScriptedProvider((request: ModelCallRequest): ScriptedReply => {
+    const forced = typeof request.toolChoice === "object" ? request.toolChoice.function.name : null;
+    if (forced === "submit_flight_spans") {
+      return toolReply("submit_flight_spans", {
+        items: [{ airline_text: "Norse Atlantic", price_text: "£299", quote: "Norse Atlantic from £299 on Thu 12 Nov 2026, nonstop", source: 1 }],
+      });
+    }
+    return textReply("Norse Atlantic has a fare from £299 [1]. Confirm on the links.");
+  });
+}
+
+/** A calendar question with the Google chip on: one read, then a text answer (decision 0016). */
+function calendarModel(): ScriptedProvider {
+  return new ScriptedProvider((request: ModelCallRequest): ScriptedReply => {
+    if (request.messages.at(-1)?.role === "tool") return textReply("You have a standup at 09:00.");
+    return toolReply("calendar_list_events", { time_min: "2026-10-21T00:00:00Z", time_max: "2026-10-22T00:00:00Z" });
+  });
+}
+
+/**
+ * The real Google connector on a fake grant table and a fake Google, with an
+ * access token that expires within the refresh margin, so a chat turn writes
+ * the refreshed token, last_used_at and, for a revoked grant, the status.
+ */
+async function googleForChat(revoked: boolean) {
+  const config = testConnectorConfig();
+  const db = new FakeConnectorDb();
+  const google = new FakeGoogle();
+  const tokens = google.issue(ALICE_GOOGLE);
+  await seedGrant(db, config, {
+    userId: ALICE,
+    refreshToken: tokens.refresh,
+    accessToken: tokens.access,
+    accessExpiresAt: new Date(Date.now() + 10_000).toISOString(),
+  });
+  google.events["primary-id@example.com"] = [
+    { summary: "Standup", start: { dateTime: "2026-10-21T09:00:00Z" }, end: { dateTime: "2026-10-21T09:15:00Z" }, organizer: { self: true } },
+  ];
+  if (revoked) google.refreshError = { status: 400, error: "invalid_grant" };
+  const connector = () => createGoogleConnector({ supabase: db.client(ALICE), userId: ALICE, config, fetchImpl: google.fetch, log: () => {} });
+  return { db, google, connector };
+}
+
+function flightTavily() {
+  return fakeTavilyFetch({
+    search: (_body, index) => (index === 0 ? [{ url: ROME2RIO, title: "London to New York flights", content: "fares", score: 0.9 }] : []),
+    pages: { [ROME2RIO]: "## London to New York\nNorse Atlantic from £299 on Thu 12 Nov 2026, nonstop" },
+  });
+}
+
 describe("POST /api/chat when one write fails", () => {
   const MESSAGE = "Plan my week";
-  type Variant = "new" | "existing" | "search";
+  /** "google": a calendar read that refreshes the token; "revoked": a refresh that gets invalid_grant. */
+  type Variant = "new" | "existing" | "search" | "workflow" | "google" | "revoked";
 
   /**
    * Faults that leave a duplicate today (see the it.fails tests below). A case
@@ -189,6 +268,21 @@ describe("POST /api/chat when one write fails", () => {
       ["lost", "MemoryRepository.insertMessage:user"],
     ],
     existing: [["lost", "MemoryRepository.insertMessage:user"]],
+    workflow: [
+      ["refused", "MemoryRepository.insertMessage:user"],
+      ["lost", "MemoryRepository.createConversation"],
+      ["lost", "MemoryRepository.insertMessage:user"],
+    ],
+    google: [
+      ["refused", "MemoryRepository.insertMessage:user"],
+      ["lost", "MemoryRepository.createConversation"],
+      ["lost", "MemoryRepository.insertMessage:user"],
+    ],
+    revoked: [
+      ["refused", "MemoryRepository.insertMessage:user"],
+      ["lost", "MemoryRepository.createConversation"],
+      ["lost", "MemoryRepository.insertMessage:user"],
+    ],
   };
 
   async function chatScenario(
@@ -203,6 +297,11 @@ describe("POST /api/chat when one write fails", () => {
     const spend = new FakeSpend();
     const quota = new FakeQuota();
     const contextRecords = new FakeContextRecords();
+    const messageResults = new FakeMessageResults();
+    const workflow = variant === "workflow";
+    const googleRead = variant === "google" || variant === "revoked";
+    const tavily = flightTavily();
+    const google = googleRead ? await googleForChat(variant === "revoked") : null;
     const existing = variant === "existing" ? await repo.createConversation(ALICE, "Earlier", "personal") : null;
     faults.wrap(repo, ["createConversation", "insertMessage"], {
       detail: (method, args) => (method === "insertMessage" ? String((args[1] as { role: string }).role) : ""),
@@ -213,14 +312,42 @@ describe("POST /api/chat when one write fails", () => {
     });
     faults.wrap(quota, ["consume"]);
     faults.wrap(contextRecords, ["insertContextRecord"]);
-    const fake = fakeDeps({ repo, spend, quota, contextRecords });
+    faults.wrap(messageResults, ["insertResults"]);
+    if (google) {
+      // The grant table's writes (token store, last_used_at, status) and Google's token endpoint.
+      faults.wrap(google.db, ["write"], {
+        label: "db",
+        detail: (_method, args) => String(args[0]),
+        failWith: (error) => ({ data: null, error: { message: error.message } }),
+      });
+      faults.wrap(google.google, ["tokenWrite"], {
+        label: "google",
+        failWith: () => new Response(JSON.stringify({ error: "backend_error" }), { status: 503 }),
+      });
+    }
+    const fake = fakeDeps({
+      repo,
+      spend,
+      quota,
+      contextRecords,
+      messageResults,
+      ...(workflow ? { provider: flightModel(), workflowTavily: bindTavily({ apiKey: "tvly-test" }, tavily.fetchImpl) } : {}),
+      ...(google ? { provider: calendarModel(), connector: google.connector } : {}),
+    });
     vi.mocked(createAssistantDeps).mockReturnValue(fake.deps);
     signInAs(ALICE);
 
-    const webSearch = variant === "search";
+    const webSearch = variant === "search" || workflow;
+    const chips = google ? { connectors: { google: true }, timeZone: "UTC" } : {};
     const send = () =>
       chatRoute.POST(
-        chatRequest({ action: "send", message: MESSAGE, webSearch, ...(existing ? { conversationId: existing.id } : {}) }),
+        chatRequest({
+          action: "send",
+          message: workflow ? FLIGHT_MESSAGE : MESSAGE,
+          webSearch,
+          ...chips,
+          ...(existing ? { conversationId: existing.id } : {}),
+        }),
       );
     const events = async (response: Response) => {
       const read = response.status === 200 ? await collect(readChatStream(response.body!)) : [];
@@ -243,7 +370,7 @@ describe("POST /api/chat when one write fails", () => {
       expect(again.at(-1)?.type, `${at}: resend`).toBe("done");
     } else if (!done) {
       const conversationId = started.type === "start" ? started.conversation.id : "";
-      const retry = await chatRoute.POST(chatRequest({ action: "retry", conversationId, webSearch }));
+      const retry = await chatRoute.POST(chatRequest({ action: "retry", conversationId, webSearch, ...chips }));
       const retried = await events(retry);
       if (retry.status !== 409) expect(retried.at(-1)?.type, `${at}: retry`).toBe("done");
     }
@@ -251,10 +378,10 @@ describe("POST /api/chat when one write fails", () => {
     const spendFaults = faults.fired.filter((f) => f.label.startsWith("FakeSpend")).length;
     const openNebius = spend.reservations.filter((r) => r.provider === "nebius" && r.settled === null).length;
     expect(openNebius, `${at}: only a failed spend write leaves a Nebius hold counted`).toBeLessThanOrEqual(spendFaults);
-    // A search that was sent keeps its Tavily credit (decision 0006).
+    // A search that was sent keeps its Tavily credit (decision 0006); so does each workflow call that was sent.
     const openTavily = spend.reservations.filter((r) => r.provider === "tavily" && r.settled === null).length;
-    expect(openTavily, `${at}: Tavily holds`).toBeLessThanOrEqual(fake.searches.length + spendFaults);
-    if (webSearch) expect(spend.reservations.some((r) => r.provider === "tavily"), `${at}: search spend`).toBe(true);
+    expect(openTavily, `${at}: Tavily holds`).toBeLessThanOrEqual(fake.searches.length + tavily.calls.length + spendFaults);
+    if (variant === "search") expect(spend.reservations.some((r) => r.provider === "tavily"), `${at}: search spend`).toBe(true);
 
     const mine = repo.conversations.filter((c) => c.userId === ALICE);
     const target = existing ?? mine.at(-1);
@@ -271,12 +398,44 @@ describe("POST /api/chat when one write fails", () => {
     expect(records.length, at).toBeLessThanOrEqual(1);
     expect(contextRecords.records.length, `${at}: no record without a saved reply`).toBeLessThanOrEqual(1);
 
+    // The workflow's results and steps, once, for the saved reply (decision 0015). A refused
+    // write only logs a warning; a lost reply response is the same known defect as the record.
+    const results = messageResults.rows.filter((r) => r.messageId === reply?.id);
+    const resultsMayBeMissing =
+      !(workflow || googleRead) ||
+      hasFault(sweepCase, "refused", "FakeMessageResults.insertResults") ||
+      (!strictRecord && hasFault(sweepCase, "lost", "MemoryRepository.insertMessage:assistant"));
+    if (!resultsMayBeMissing) expect(results, `${at}: one results row for the reply`).toHaveLength(1);
+    expect(results.length, at).toBeLessThanOrEqual(1);
+    expect(messageResults.rows.length, `${at}: no results without a saved reply`).toBeLessThanOrEqual(workflow || googleRead ? 1 : 0);
+    for (const row of results) {
+      expect(row.userId, at).toBe(ALICE);
+      expect(row.payload.steps.every((step) => step.status !== "running"), `${at}: no step left running`).toBe(true);
+    }
+
+    if (google) {
+      // One grant, never in between: a refresh that worked keeps it active and usable, and an
+      // invalid_grant answer marks it needs_reconnect unless that status write was refused.
+      expect(google.db.grants, at).toHaveLength(1);
+      const status = google.db.grants[0]!.status;
+      if (variant === "google") {
+        expect(status, at).toBe("active");
+        // The grant still works for the next message: a fresh read succeeds.
+        const outcome = await google.connector().run(
+          { id: "call_check", type: "function", function: { name: "calendar_list_events", arguments: JSON.stringify({ time_min: "2026-10-21T00:00:00Z", time_max: "2026-10-22T00:00:00Z" }) } },
+        );
+        expect(outcome.failed, `${at}: the grant still reads`).toBe(false);
+      } else if (!hasFault(sweepCase, "refused", "db.write:update")) {
+        expect(status, at).toBe("needs_reconnect");
+      }
+    }
+
     if (!checkDuplicates) return;
     expect(mine, `${at}: no extra conversation`).toHaveLength(1);
     expect(thread.map((m) => m.role), `${at}: one message and one reply`).toEqual(["user", "assistant"]);
   }
 
-  it.each(["new", "existing", "search"] as const)(
+  it.each(["new", "existing", "search", "workflow", "google", "revoked"] as const)(
     "%s conversation: every write, up to two faults, ends with one message, its reply and its record",
     async (variant) => {
       const cases = await sweepWriteFaults((faults, sweepCase) => chatScenario(variant, faults, sweepCase));
@@ -288,11 +447,17 @@ describe("POST /api/chat when one write fails", () => {
         "MemoryRepository.insertMessage:assistant",
         "FakeSpend.settle:nebius",
         "FakeContextRecords.insertContextRecord",
-        ...(variant === "search" ? ["FakeSpend.reserve:tavily"] : []),
+        ...(variant === "search" || variant === "workflow" ? ["FakeSpend.reserve:tavily"] : []),
+        ...(variant === "workflow" || variant === "google" || variant === "revoked" ? ["FakeMessageResults.insertResults"] : []),
+        // The connector's own writes during the chat turn (decision 0016).
+        ...(variant === "google" ? ["db.write:rpc.store_connector_tokens", "db.write:update", "google.tokenWrite"] : []),
+        ...(variant === "revoked" ? ["db.write:update"] : []),
       ]) {
         expect(labels, label).toContain(label);
       }
     },
+    // About 200 runs each; the workflow ones read pages too, which is slow when every file runs at once.
+    60_000,
   );
 
   // Defect: these writes happen before the stream starts, so the route answers 500 and the
@@ -345,6 +510,42 @@ describe("/api/conversations", () => {
     const response = await itemRoute.GET(itemRequest("GET"), params(own.id));
     expect(response.status).toBe(200);
     expect(await response.json()).toMatchObject({ id: own.id, title: "Mine", messages: [{ content: "hello" }] });
+  });
+
+  it("attaches each assistant reply's stored results and steps, and only the owner's", async () => {
+    const own = await repo.createConversation(ALICE, "Trip");
+    await repo.insertMessage(ALICE, { conversationId: own.id, role: "user", content: "flights?" });
+    const reply = await repo.insertMessage(ALICE, { conversationId: own.id, role: "assistant", content: "Here." });
+    const plain = await repo.insertMessage(ALICE, { conversationId: own.id, role: "assistant", content: "Plain." });
+    const payload: MessageResultsPayload = {
+      results: [{ kind: "drive", files: [{ id: "abcdefghij12", name: "Plan", kind: "doc" }] }],
+      steps: [{ id: "google-call_1", label: "Found 1 file in Drive", status: "done" }],
+    };
+    await storedResults.insertResults(ALICE, reply.id, payload);
+    await storedResults.insertResults(BOB, plain.id, payload);
+    const listed = vi.spyOn(storedResults, "listForMessages");
+    signInAs(ALICE);
+
+    const body = await (await itemRoute.GET(itemRequest("GET"), params(own.id))).json();
+    expect(body.messages.map((m: { content: string; results?: unknown }) => [m.content, m.results ?? null])).toEqual([
+      ["flights?", null],
+      ["Here.", payload],
+      ["Plain.", null],
+    ]);
+    // Only the assistant replies are looked up, for the session user.
+    expect(listed).toHaveBeenCalledWith(ALICE, [reply.id, plain.id]);
+  });
+
+  it("still returns the conversation without cards when the results cannot be read", async () => {
+    const own = await repo.createConversation(ALICE, "Trip");
+    await repo.insertMessage(ALICE, { conversationId: own.id, role: "assistant", content: "Here." });
+    vi.spyOn(storedResults, "listForMessages").mockRejectedValue(new Error("db down: postgres://secret"));
+    signInAs(ALICE);
+    const response = await itemRoute.GET(itemRequest("GET"), params(own.id));
+    expect(response.status).toBe(200);
+    const text = await response.text();
+    expect(text).not.toContain("secret");
+    expect(JSON.parse(text).messages).toEqual([expect.not.objectContaining({ results: expect.anything() })]);
   });
 
   it("hides other users' conversations behind 404, including malformed IDs", async () => {

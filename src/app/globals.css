@@ -23,10 +23,6 @@
   --sage-text: #14633a;
   --butter: #fff1cc;
   --butter-text: #7a5200;
-  --personal: #ffe4ec;
-  --personal-text: #a3153f;
-  --work: #dcebff;
-  --work-text: #174ea6;
   --danger: #8a2a18;
   --error-bg: #fde6e1;
   --focus: #4f46e5;
@@ -56,10 +52,6 @@
     --sage-text: #b4e6c8;
     --butter: #3d3317;
     --butter-text: #f3dc92;
-    --personal: #4a1f2f;
-    --personal-text: #ffc2d4;
-    --work: #1c3355;
-    --work-text: #bcd7ff;
     --danger: #ffb4a3;
     --error-bg: #4a2620;
     --focus: #9a93ff;
@@ -1272,13 +1264,6 @@ textarea::placeholder {
   gap: 0.75rem;
 }
 
-.scope-note {
-  padding: 0.75rem 1rem;
-  border-radius: 14px;
-  background: var(--accent-soft);
-  color: var(--accent-soft-text);
-}
-
 .two-column {
   display: flex;
   flex-wrap: wrap;
@@ -1454,7 +1439,7 @@ textarea::placeholder {
   }
 }
 
-/* Colour: soft backdrop, mode colours, tool chips */
+/* Colour: soft backdrop, tool chips */
 
 .landing {
   background:
@@ -1468,28 +1453,6 @@ textarea::placeholder {
   -webkit-background-clip: text;
   background-clip: text;
   color: transparent;
-}
-
-.mode-option[data-mode="personal"][aria-pressed="true"] {
-  background: var(--personal);
-  color: var(--personal-text);
-  box-shadow: none;
-}
-
-.mode-option[data-mode="work"][aria-pressed="true"] {
-  background: var(--work);
-  color: var(--work-text);
-  box-shadow: none;
-}
-
-.scope-note-personal {
-  background: var(--personal);
-  color: var(--personal-text);
-}
-
-.scope-note-work {
-  background: var(--work);
-  color: var(--work-text);
 }
 
 .chip-gmail {

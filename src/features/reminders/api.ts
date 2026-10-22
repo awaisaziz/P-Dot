@@ -1,8 +1,8 @@
 import { deleteResource, sendJson } from "@/lib/api-client";
-import type { Mode, ReminderDTO, ReminderStatus } from "@/types/api";
+import type { ReminderDTO, ReminderStatus } from "@/types/api";
 
-export async function createReminder(mode: Mode, title: string, dueAt: string): Promise<ReminderDTO> {
-  return sendJson<ReminderDTO>("/api/reminders", "POST", { mode, title, dueAt });
+export async function createReminder(title: string, dueAt: string): Promise<ReminderDTO> {
+  return sendJson<ReminderDTO>("/api/reminders", "POST", { title, dueAt });
 }
 
 export async function updateReminder(

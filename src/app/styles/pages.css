@@ -1,0 +1,614 @@
+/* Workspace pages: Today, Connectors, Settings and the landing page. Uses the tokens in globals.css. */
+
+/* Page titles: a heading and one line under it. */
+
+.page-intro {
+  display: flex;
+  flex-direction: column;
+  gap: 0.375rem;
+}
+
+/* Header: brand, page links, install button, account menu */
+
+.workspace-header {
+  gap: 1rem;
+  min-height: 3.5rem;
+  padding: 0.5rem 1.5rem;
+}
+
+.workspace-header .main-nav {
+  gap: 0.125rem;
+  min-width: 0;
+}
+
+.workspace-header .nav-link {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.4375rem 0.75rem;
+  font-size: 0.9375rem;
+  white-space: nowrap;
+}
+
+.nav-toggle {
+  display: none;
+}
+
+.header-account {
+  gap: 0.5rem;
+}
+
+.account-menu {
+  position: relative;
+}
+
+.account-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2.25rem;
+  height: 2.25rem;
+  padding: 0;
+  border: 2px solid transparent;
+  border-radius: 50%;
+  background: var(--accent-soft);
+  color: var(--accent-soft-text);
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.account-button:hover,
+.account-button[aria-expanded="true"] {
+  border-color: var(--accent);
+}
+
+.account-panel {
+  position: absolute;
+  top: calc(100% + 0.5rem);
+  right: 0;
+  z-index: 20;
+  width: max-content;
+  min-width: 14rem;
+  max-width: min(20rem, calc(100vw - 2rem));
+  padding: 0.375rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  box-shadow: var(--shadow);
+  display: flex;
+  flex-direction: column;
+  gap: 0.125rem;
+}
+
+.account-panel[hidden] {
+  display: none;
+}
+
+.account-panel form {
+  margin: 0;
+}
+
+.account-who {
+  display: flex;
+  flex-direction: column;
+  padding: 0.5rem 0.75rem 0.625rem;
+  margin-bottom: 0.25rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.account-address {
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+
+.account-item {
+  display: block;
+  width: 100%;
+  padding: 0.5rem 0.75rem;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-weight: 600;
+  text-align: left;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.account-item:hover {
+  background: var(--surface-muted);
+  color: var(--text);
+}
+
+/* Narrow screens: the links fold into a menu under the top row (NavLinks.tsx uses the same width). */
+@media (max-width: 960px) {
+  .workspace-header {
+    position: relative;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    padding: 0.5rem 1rem;
+  }
+
+  .nav-toggle {
+    order: 1;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    min-width: 0;
+    min-height: 2.25rem;
+    margin-left: auto;
+    padding: 0.25rem 0.875rem;
+    border: 2px solid var(--border-strong);
+    border-radius: 999px;
+    background: var(--surface);
+    color: var(--text);
+    font: inherit;
+    font-size: 0.9375rem;
+    font-weight: 700;
+    cursor: pointer;
+  }
+
+  .nav-toggle:hover,
+  .nav-toggle[aria-expanded="true"] {
+    background: var(--surface-muted);
+  }
+
+  .nav-toggle .nav-badge {
+    margin-left: 0;
+  }
+
+  .nav-toggle-icon {
+    flex-shrink: 0;
+    width: 0.875rem;
+    height: 2px;
+    border-radius: 1px;
+    background: currentColor;
+    box-shadow:
+      0 -5px 0 currentColor,
+      0 5px 0 currentColor;
+  }
+
+  .header-account {
+    order: 2;
+    margin-left: 0;
+  }
+
+  .workspace-header .main-nav {
+    order: 3;
+    display: none;
+    width: 100%;
+    overflow: visible;
+  }
+
+  .workspace-header .main-nav[data-open] {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0.25rem;
+    padding: 0.5rem 0 0.25rem;
+    border-top: 1px solid var(--border);
+  }
+
+  .workspace-header .main-nav .nav-link {
+    padding: 0.625rem 0.75rem;
+    border-radius: 12px;
+  }
+}
+
+@media (max-width: 480px) {
+  /* The dot alone; the name stays readable to screen readers. */
+  .workspace-header .brand {
+    font-size: 0;
+    gap: 0;
+  }
+
+  .header-install-extra {
+    display: none;
+  }
+}
+
+/* Phone widths: 16px side gutters, tighter panels */
+
+@media (max-width: 600px) {
+  .page {
+    padding: 1.5rem 1rem 3rem;
+  }
+
+  .page h1 {
+    font-size: 1.625rem;
+  }
+
+  .panel {
+    padding: 1rem;
+  }
+
+  .page .card {
+    padding: 1.25rem;
+  }
+
+  .auth-shell {
+    padding: 2rem 1rem;
+  }
+
+  .auth-shell .card {
+    padding: 1.5rem 1.25rem;
+  }
+}
+
+/* Connectors directory */
+
+.connector-search .form-control {
+  max-width: 28rem;
+  border-radius: 999px;
+  padding-inline: 1.125rem;
+}
+
+.connector-group {
+  display: flex;
+  flex-direction: column;
+  gap: 0.875rem;
+}
+
+.connector-group-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.25rem 0.75rem;
+}
+
+.connector-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(15rem, 100%), 1fr));
+  gap: 0.875rem;
+}
+
+.connector-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  min-width: 0;
+  padding: 1rem 1.125rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+
+.connector-card-head {
+  display: flex;
+  align-items: center;
+  gap: 0.625rem;
+}
+
+.connector-card-name {
+  flex: 1;
+  min-width: 0;
+  font-size: 1rem;
+}
+
+.connector-card-line {
+  font-size: 0.9375rem;
+}
+
+.connector-card-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.25rem 0.75rem;
+  margin-top: auto;
+  font-size: 0.875rem;
+}
+
+.connector-card-meta .connector-status {
+  color: var(--text-muted);
+}
+
+.connector-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 2.25rem;
+  height: 2.25rem;
+  border-radius: 10px;
+  background: var(--surface-muted);
+  color: var(--text-muted);
+}
+
+.connector-icon-letter {
+  font-size: 1.125rem;
+  font-weight: 700;
+  line-height: 1;
+}
+
+/* Built in: P-Dot's own accent. Coming soon keeps the muted default. */
+.connector-icon[data-icon="tasks"],
+.connector-icon[data-icon="reminders"],
+.connector-icon[data-icon="memory"],
+.connector-icon[data-icon="documents"] {
+  background: var(--accent-soft);
+  color: var(--accent-soft-text);
+}
+
+/* Google products: product colours, the one exception to the tokens (like the tool chips). */
+.connector-icon[data-icon="google"] {
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: #1a73e8;
+}
+
+.connector-icon[data-icon="calendar"] {
+  background: #dbeafe;
+  color: #1e40af;
+}
+
+.connector-icon[data-icon="docs"] {
+  background: #e0e7ff;
+  color: #3730a3;
+}
+
+.connector-icon[data-icon="slides"] {
+  background: #fef3c7;
+  color: #92400e;
+}
+
+.connector-icon[data-icon="sheets"] {
+  background: #dcfce7;
+  color: #166534;
+}
+
+.connector-icon[data-icon="drive"] {
+  background: #e0f2fe;
+  color: #075985;
+}
+
+@media (prefers-color-scheme: dark) {
+  .connector-icon[data-icon="google"] { color: #8ab4f8; }
+  .connector-icon[data-icon="calendar"] { background: #1c3355; color: #bcd7ff; }
+  .connector-icon[data-icon="docs"] { background: #262a5c; color: #c7cdff; }
+  .connector-icon[data-icon="slides"] { background: #45351a; color: #fbd68a; }
+  .connector-icon[data-icon="sheets"] { background: #17392a; color: #a7e8c0; }
+  .connector-icon[data-icon="drive"] { background: #123a52; color: #bfe6fb; }
+}
+
+/* The one Google sign-in row */
+
+.google-account {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 0.75rem 1rem;
+  padding: 1rem 1.125rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+
+.google-account-body {
+  display: flex;
+  flex-direction: column;
+  gap: 0.125rem;
+  min-width: 0;
+}
+
+.google-account-name {
+  font-weight: 700;
+}
+
+.google-account-email {
+  overflow-wrap: anywhere;
+}
+
+.google-account-actions {
+  justify-content: flex-end;
+}
+
+.google-account-error {
+  grid-column: 1 / -1;
+}
+
+@media (max-width: 600px) {
+  .google-account {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .google-account-actions {
+    grid-column: 1 / -1;
+    justify-content: flex-start;
+  }
+}
+
+/* Today: Coming up */
+
+.coming-up-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.coming-up-row {
+  display: grid;
+  grid-template-columns: 5.5rem minmax(0, 1fr) auto;
+  align-items: baseline;
+  gap: 0.75rem;
+  padding: 0.625rem 0;
+  border-top: 1px solid var(--border);
+}
+
+.coming-up-row:first-child {
+  border-top: 0;
+  padding-top: 0;
+}
+
+.coming-up-time {
+  display: flex;
+  flex-direction: column;
+  color: var(--accent);
+  font-size: 0.875rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+
+.coming-up-day {
+  color: var(--text-muted);
+  font-size: 0.75rem;
+  font-weight: 500;
+}
+
+.coming-up-body {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.coming-up-title,
+.coming-up-meta {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.coming-up-title {
+  font-weight: 600;
+}
+
+.coming-up-meta {
+  color: var(--text-muted);
+  font-size: 0.8125rem;
+}
+
+.coming-up-link {
+  font-size: 0.875rem;
+}
+
+@media (max-width: 420px) {
+  .coming-up-row {
+    grid-template-columns: 4.75rem minmax(0, 1fr) auto;
+    gap: 0.5rem;
+  }
+}
+
+/* Today: starter prompts */
+
+.today-starter-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.375rem;
+}
+
+.today-starter {
+  display: flex;
+  flex-direction: column;
+  gap: 0.125rem;
+  padding: 0.625rem 0.875rem;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface);
+  color: var(--text);
+  font-weight: 400;
+  text-decoration: none;
+  transition:
+    background-color 0.15s ease-out,
+    border-color 0.15s ease-out;
+}
+
+.today-starter:hover {
+  border-color: var(--border-strong);
+  background: var(--surface-muted);
+  color: var(--text);
+}
+
+.today-starter-title {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.5rem;
+  font-weight: 700;
+}
+
+.today-starter-title::after {
+  content: "→";
+  color: var(--accent);
+}
+
+.today-starter-example {
+  color: var(--text-muted);
+  font-size: 0.875rem;
+}
+
+/* Settings */
+
+.data-use-list {
+  gap: 0.5rem;
+}
+
+/* Landing: what P-Dot does now, and the Google chips */
+
+.landing-features {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-width: 32rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.625rem;
+}
+
+.landing-feature {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.75rem;
+}
+
+.landing-feature-mark {
+  flex-shrink: 0;
+  width: 0.5rem;
+  height: 0.5rem;
+  margin-top: 0.5rem;
+  border-radius: 50%;
+  background: var(--accent-gradient);
+}
+
+.landing-feature-body {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.chip-docs {
+  background: #e0e7ff;
+  color: #3730a3;
+}
+
+.chip-slides {
+  background: #fef3c7;
+  color: #92400e;
+}
+
+.chip-sheets {
+  background: #dcfce7;
+  color: #166534;
+}
+
+.chip-drive {
+  background: #e0f2fe;
+  color: #075985;
+}
+
+@media (prefers-color-scheme: dark) {
+  .chip-docs { background: #262a5c; color: #c7cdff; }
+  .chip-slides { background: #45351a; color: #fbd68a; }
+  .chip-sheets { background: #17392a; color: #a7e8c0; }
+  .chip-drive { background: #123a52; color: #bfe6fb; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .today-starter {
+    transition: none;
+  }
+}

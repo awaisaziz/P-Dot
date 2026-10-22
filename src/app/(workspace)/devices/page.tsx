@@ -8,9 +8,9 @@ export const metadata: Metadata = { title: "Devices · P-Dot" };
 // The planned pairing flow, shown as a preview. See docs/decisions/0010-pwa-and-device-pairing.md.
 const PAIRING_STEPS = [
   "Install P-Dot on the laptop or phone you want to pair.",
-  "Create a pairing code here. It works once and expires after 10 minutes.",
+  "Create a one-time pairing code here; it expires in 10 minutes.",
   "Enter the code on the other device.",
-  "Check the device name and approve it here. You can remove it at any time.",
+  "Approve the device here; remove it any time.",
 ];
 
 export default async function DevicesPage() {
@@ -18,24 +18,23 @@ export default async function DevicesPage() {
 
   return (
     <main className="page stack">
-      <div>
+      <div className="page-intro">
         <h1>Devices</h1>
         <p className="muted">
-          Pair your own laptop and phone so P-Dot can act on them. Every action on a device will wait for your approval
-          and be written to the <Link href="/action-log">action log</Link>.
+          Pair your laptop and phone so P-Dot can act on them, with approval and an{" "}
+          <Link href="/action-log">action log</Link> entry for every action.
         </p>
       </div>
 
       <p className="alert alert-warning" role="status">
-        Device pairing is not available yet. It needs a pairing service and a small P-Dot app on each device, which are
-        not built. Nothing on this page connects to another device; the steps below preview the plan.
+        Device pairing is not built yet; the steps below are a preview.
       </p>
 
       <section className="card stack" aria-labelledby="this-device-heading">
         <h2 id="this-device-heading">This device</h2>
         <ThisDevice />
         <p className="hint">
-          Read from this browser only. Install the app and allow notifications in <Link href="/settings">Settings</Link>.
+          Read from this browser; install and allow notifications in <Link href="/settings">Settings</Link>.
         </p>
       </section>
 
@@ -61,7 +60,7 @@ export default async function DevicesPage() {
 
       <section className="card stack" aria-labelledby="paired-heading">
         <h2 id="paired-heading">Paired devices</h2>
-        <p className="muted">No devices can be paired yet, so none are listed.</p>
+        <p className="muted">No paired devices yet.</p>
       </section>
     </main>
   );

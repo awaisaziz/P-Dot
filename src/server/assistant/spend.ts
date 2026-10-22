@@ -1,5 +1,12 @@
 import "server-only";
-import { SEARCH_EXCERPT_CHARS, SEARCH_MAX_RESULTS } from "@/lib/limits";
+import {
+  DOCUMENT_CHUNK_CHARS,
+  MAX_DOCUMENT_TITLE_CHARS,
+  MAX_MEMORY_CHARS,
+  RETRIEVAL_MATCH_COUNT,
+  SEARCH_EXCERPT_CHARS,
+  SEARCH_MAX_RESULTS,
+} from "@/lib/limits";
 import { MAX_SAFE_URL_CHARS } from "@/lib/safe-url";
 import { ConfigError } from "@/lib/supabase-config";
 import type { ApiErrorCode } from "@/types/api";
@@ -16,8 +23,35 @@ import {
 /** The largest hold the database accepts for one Nebius call ($0.25). */
 export const MAX_NEBIUS_HOLD_MICRO_USD = 250_000;
 
-/** Credits for one Tavily search at `basic` depth (the only depth this app uses). */
+/** Credits for one Tavily search at `basic` depth (the chat's web search). */
 export const TAVILY_BASIC_SEARCH_CREDITS = 1;
+
+/** The most credits one Tavily reservation may hold (the SQL refuses more). */
+export const TAVILY_MAX_RESERVATION_CREDITS = 2;
+
+export type TavilyDepth = "basic" | "advanced";
+
+/** Credits for one Tavily search: 1 at basic depth, 2 at advanced. */
+export function tavilySearchCredits(depth: TavilyDepth): number {
+  return depth === "advanced" ? 2 : TAVILY_BASIC_SEARCH_CREDITS;
+}
+
+/** The most URLs one extract reservation covers. */
+export const TAVILY_EXTRACT_MAX_URLS = 5;
+
+/**
+ * Credits for one Tavily extract call: 1 per 5 URLs at basic depth, 2 per 5 at
+ * advanced. Throws a RangeError for no URLs, more than 5 URLs or more than 2
+ * credits, because one reservation may hold at most 2 credits.
+ */
+export function tavilyExtractCredits(urlCount: number, depth: TavilyDepth): number {
+  if (!Number.isInteger(urlCount) || urlCount < 1 || urlCount > TAVILY_EXTRACT_MAX_URLS) {
+    throw new RangeError(`An extract reservation covers 1 to ${TAVILY_EXTRACT_MAX_URLS} URLs`);
+  }
+  const credits = Math.ceil(urlCount / TAVILY_EXTRACT_MAX_URLS) * (depth === "advanced" ? 2 : 1);
+  if (credits > TAVILY_MAX_RESERVATION_CREDITS) throw new RangeError("Too many credits for one reservation");
+  return credits;
+}
 
 /**
  * Bytes that search results can add to the prompt: each result has a title
@@ -26,6 +60,32 @@ export const TAVILY_BASIC_SEARCH_CREDITS = 1;
  */
 export const SEARCH_RESULTS_MAX_BYTES =
   SEARCH_MAX_RESULTS * ((200 + SEARCH_EXCERPT_CHARS) * 4 + MAX_SAFE_URL_CHARS + 128) + 512;
+
+/**
+ * The most bytes one workflow tool result (<flight_results> or
+ * <research_results>) may add to the next prompt. The workflow cuts its block
+ * to fit (decision 0015).
+ */
+export const WORKFLOW_RESULT_MAX_BYTES = 24_576;
+
+/**
+ * The most bytes one connector tool result (<connector_results>) may add to
+ * the next prompt. One workflow result and three connector results fit under
+ * the hold ceiling with a full history on the heavy tier (Ultra, 8,192 output
+ * tokens); tests/unit/spend-guard.test.ts checks it.
+ */
+export const CONNECTOR_RESULT_MAX_BYTES = 12_288;
+
+/**
+ * The most bytes one search_documents result may add: every matching chunk
+ * and its title at up to 4 UTF-8 bytes per character, and the wrapper text.
+ * The room check before the tool runs uses it.
+ */
+export const DOCUMENT_RESULTS_MAX_BYTES =
+  RETRIEVAL_MATCH_COUNT * ((MAX_DOCUMENT_TITLE_CHARS + DOCUMENT_CHUNK_CHARS) * 4 + 64) + 256;
+
+/** The most bytes one search_memories result may add, the same way. */
+export const MEMORY_RESULTS_MAX_BYTES = RETRIEVAL_MATCH_COUNT * (MAX_MEMORY_CHARS * 4 + 32) + 256;
 
 /** The model's price. A model without a price is a configuration error: it is never called. */
 function requirePrice(model: string): ModelPrice {
@@ -82,6 +142,28 @@ export function nebiusHoldMicroUsd(
     promptTokens: inputTokenBound(messages, extraInputBytes),
     completionTokens: maxOutputTokens,
   });
+}
+
+/**
+ * True when the next call's worst-case hold, for the most expensive of
+ * `models`, still fits under the ceiling with `extraBytes` more input (for
+ * example the tool results that are about to be added). False instead of
+ * NebiusHoldTooLargeError, so a tool can answer "not run: context full"
+ * before it calls anything. Throws ConfigError for a model without a price.
+ */
+export function nextHopFits(
+  models: string[],
+  messages: ChatMessage[],
+  maxOutputTokens: number,
+  extraBytes: number,
+): boolean {
+  try {
+    for (const model of models) nebiusHoldMicroUsd(model, messages, maxOutputTokens, extraBytes);
+    return true;
+  } catch (error) {
+    if (error instanceof NebiusHoldTooLargeError) return false;
+    throw error;
+  }
 }
 
 /**

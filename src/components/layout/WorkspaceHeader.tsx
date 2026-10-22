@@ -1,11 +1,10 @@
 import Link from "next/link";
-import { signOutAction } from "@/features/auth/actions";
 import { InstallButton } from "@/features/pwa/InstallButton";
-import type { Mode } from "@/types/api";
-import { ModeToggle } from "./ModeToggle";
+import { AccountMenu } from "./AccountMenu";
 import { NavLinks } from "./NavLinks";
 
-export function WorkspaceHeader({ email, mode }: { email: string | null; mode: Mode }) {
+/** Brand, the page links (a menu on narrow screens), the install button and the account menu. */
+export function WorkspaceHeader({ email }: { email: string | null }) {
   return (
     <header className="workspace-header">
       <Link href="/chat" className="brand">
@@ -14,13 +13,7 @@ export function WorkspaceHeader({ email, mode }: { email: string | null; mode: M
       <NavLinks />
       <div className="header-account">
         <InstallButton />
-        <ModeToggle mode={mode} />
-        {email && <span className="muted small header-email">{email}</span>}
-        <form action={signOutAction}>
-          <button type="submit" className="button button-small">
-            Sign out
-          </button>
-        </form>
+        <AccountMenu email={email} />
       </div>
     </header>
   );

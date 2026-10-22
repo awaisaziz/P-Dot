@@ -48,7 +48,7 @@ export function ThisDevice() {
         <dt>Push messages</dt>
         <dd>
           {pwa.push
-            ? "Supported by this browser. P-Dot does not send any yet."
+            ? "Supported; P-Dot does not send any yet."
             : pwa.platform === "ios" && !pwa.standalone
               ? "Available after you add P-Dot to the Home Screen"
               : "Not supported by this browser"}

@@ -6,8 +6,8 @@ import { APPROVAL_MODES, APPROVAL_MODE_LABELS, MAX_AUTO_ACTIONS_PER_REPLY, type 
 import { setApprovalMode, useApprovalMode, useApprovalModeChosen } from "./approval-mode";
 
 const DESCRIPTIONS: Record<ApprovalMode, string> = {
-  manual: "Every action waits for your OK. Recommended.",
-  auto: `Tasks and reminders are added on their own (up to ${MAX_AUTO_ACTIONS_PER_REPLY} per reply), with Undo. Deleting, memories, outside accounts and private data still ask.`,
+  manual: "Every action waits for your OK (recommended).",
+  auto: `Adds tasks and reminders on its own (up to ${MAX_AUTO_ACTIONS_PER_REPLY} per reply, with Undo); everything else still asks.`,
 };
 
 function ModeIcon({ mode }: { mode: ApprovalMode }) {
@@ -144,7 +144,7 @@ export function ApprovalModeSetup() {
         </button>
       </div>
       <ApprovalModeOptions />
-      <p className="hint">You can change this any time with the button next to the message box, or in Settings.</p>
+      <p className="hint">Change it any time next to the message box or in Settings.</p>
     </section>
   );
 }

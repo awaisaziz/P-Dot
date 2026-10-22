@@ -37,7 +37,7 @@ export interface NewMessage {
  */
 export interface ConversationRepository {
   getConversation(userId: string, conversationId: string): Promise<ConversationSummary | null>;
-  /** Newest first; `mode` limits the list to one side (personal or work). */
+  /** Newest first. `mode`, when given, keeps only the rows saved with it (decision 0014: the app passes none). */
   listConversations(userId: string, limit: number, mode?: Mode): Promise<ConversationSummary[]>;
   createConversation(userId: string, title: string, mode: Mode): Promise<ConversationSummary>;
   /** Returns null when no conversation with that ID belongs to the user. */

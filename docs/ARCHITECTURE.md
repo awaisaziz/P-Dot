@@ -19,9 +19,17 @@ Cloudflare Worker (OpenNext): Next.js API routes
    |     |-- executor: retries, fallbacks, hedge, breaker
    |     |-- tool loop (service.ts): at most 3 model calls per reply; tools read the
    |     |     user's data, search the web, or create proposals the user approves
+   |     |-- grounded workflows (workflows/): search_flights and verified_research run
+   |     |     several searches, read pages, extract with a forced tool call and keep
+   |     |     only facts quoted word for word from a page (decision 0015)
+   |     |-- Google connector (src/server/connectors): read-only Calendar and Drive,
+   |     |     only while the user's Google chip is on (decision 0016)
    |     |-- Nebius Token Factory: streamed model inference (OpenAI-compatible)
    |     |     `-- or a local Ollama for a model with the `ollama/` prefix (local simulation)
-   |     `-- Tavily: web retrieval (the search toggle, and the web_search tool)
+   |     `-- Tavily: web retrieval (the search toggle, web_search, and the workflows'
+   |           search and extract calls)
+   |-- Google APIs (www.googleapis.com, oauth2.googleapis.com): GET only, tokens
+   |     encrypted with AES-GCM in the Worker before they reach the database
    `-- persistence (src/server/db) -> Supabase Postgres with row-level security
 ```
 
@@ -65,6 +73,10 @@ src/
     auth/                  getClaims-based session, proxy helper
     assistant/             context budget, prompt assembly, orchestration,
                            model router, tiers, executor, circuit breaker
+      workflows/           grounded lookups: flights, research, verify, airports,
+                           links, intent, encoding (decision 0015)
+    connectors/            config, crypto (HKDF, AES-GCM, signed state), Google
+                           OAuth, Calendar and Drive clients, tool runner (0016)
     providers/             model.ts (provider interface), nebius/ (SSE streaming),
                            tavily/, shared errors/timeouts
     db/                    Supabase client, conversation repository, quota gate, spend guard
@@ -101,6 +113,13 @@ Defined in `supabase/migrations/20261014000000_initial_schema.sql`:
 - `usage_windows`: per-user request count per fixed window, written only by `consume_chat_quota()`.
 - `spend_counters` and `spend_reservations`: global spend for Nebius (micro-dollars) and Tavily (credits) per UTC day, month and all time, plus one row per held call. No user content. Users cannot read or write them; only `reserve_provider_spend()` and `settle_provider_spend()` do ([decision 0006](decisions/0006-global-spend-guard.md)).
 
+Added on 2026-10-22 (decisions 0015, 0016; migrations `20261022000500_message_results.sql`, `20261022001000_connector_grants.sql`):
+
+- `message_results`: the verified results and steps of one assistant reply (`payload` up to 32 KB, kinds `flights`, `research`, `calendar`, `drive`), deleted with the message. Select and insert own; no update.
+- `connector_grants`: one Google grant per user (account `sub` and email, granted scopes, status `active` or `needs_reconnect`, last used). The two token columns hold AES-GCM ciphertext made in the Worker and are not in the select grant; they are written only by `store_connector_tokens()` and read only by `connector_grant_secrets()`, both SECURITY DEFINER and limited to the caller's own row. A trigger writes `connector_added`, `connector_removed` and `connector_changed` to the action log with IDs, counts and status only.
+
+Every row still carries a `mode` column (`personal` for everything written since decision 0014); the app no longer shows or filters by it.
+
 RLS allows each user to select and insert only their own rows and to delete only their own conversations (messages cascade). Updates are revoked. Repository methods also filter by the session user ID. Each chat request holds a worst-case Nebius cost (and one Tavily credit when search is on) before the paid call, and settles the real cost from the token usage after it. A hold above $0.25 is refused, never reduced; `src/server/assistant/spend.ts` computes every hold. Global caps refuse a request with `budget_exhausted` before streaming ([decision 0006](decisions/0006-global-spend-guard.md)).
 
 ## Provider contracts
@@ -110,6 +129,10 @@ Nebius exposes an OpenAI-compatible API. The adapter calls `POST {NEBIUS_BASE_UR
 Model routing ([decision 0007](decisions/0007-model-routing.md)): a rule-based router picks a tier (`fast`, `standard`, `heavy` or `vision`) from the message, the conversation size, web search and the user's effort choice. The executor runs the tier's model chain through a provider interface (`src/server/providers/model.ts`). It retries and falls back only before the first visible token or tool call, uses one deadline for all attempts, hedges slow fast-tier calls once, and skips a failing model with a soft breaker in isolate memory (best effort, not shared). Each attempt holds and settles spend through the spend guard. A model ID with the `ollama/` prefix goes to a local Ollama server through the same client at zero price ([decision 0013](decisions/0013-ai-layer-integration-and-local-simulation.md)). Tavily `POST /search` is called with `basic` depth and at most five results, and only http(s) URLs are kept. Responses are validated with Zod, context is bounded, and both adapters have timeouts. Retrieved text goes in the final user turn inside `<web_search_results>` delimiters and is described to the model as untrusted data.
 
 The tool loop ([decision 0013](decisions/0013-ai-layer-integration-and-local-simulation.md)): the model may call `web_search` (one Tavily credit each, held first), `search_documents` and `search_memories` (similarity search over the user's own rows, through the budgeted embedder), `save_memory` (a `proposed` memory the user keeps or discards), and `propose_task` or `propose_reminder` (an `action_proposals` row the user approves; nothing runs without approval, decision 0009). A reply has at most three model calls; the last one offers no tools, so the model answers with what it has. Each call holds and settles spend like any other attempt. Tool results go back to the model inside delimiters as untrusted data and never authorize anything. Memories that match the message are retrieved before the first call and placed in the system message; the context record lists the memory and document chunk IDs that were sent. A new conversation is named from its first exchange with one fast-tier call, and `POST /api/memories/summarize` suggests lasting facts from a conversation as `proposed` memories.
+
+Grounded workflows ([decision 0015](decisions/0015-grounded-workflows.md)): when `parseFlightRequest` finds an origin, a destination and a date in the user's words, the service runs the flight check itself before the first model call and skips the toggle search; a vaguer flight request (detected by `detectFlightIntent`) offers `search_flights` normally, and the tool refuses without spending credits unless the trip details are in the user's own messages. A workflow reserves all its Tavily credits first, runs up to 3 searches in parallel, extracts up to 5 pages, and makes one forced tool call on the extraction plan that returns verbatim spans. Code then checks that each quote is in one chunk of its page, that the price, airline, route, direction and date are in the quote, and parses currency and price basis itself. Only verified items go back to the model, inside `<flight_results>` or `<research_results>` with every untrusted character encoded. The service streams a `step` event per stage and a `result` event, writes a code-built summary as the first line of the reply, marks any price or time in the reply that is not in the verified set, and saves results and steps to `message_results`. After a workflow or connector result, the reply is tainted: later hops offer no tool that sends text outside P-Dot, and Auto runs nothing on its own. At most one workflow runs per reply, and `nextHopFits` refuses a tool whose result could push the next hop past the hold ceiling.
+
+Google connector ([decision 0016](decisions/0016-google-connectors.md)): `POST /api/connectors/google/start` sets a signed `__Host-pdot_oauth` cookie (state, PKCE verifier, user ID) and returns Google's authorization URL; the callback checks the cookie and session, exchanges the code, encrypts the tokens and stores the grant. The tools `calendar_list_events`, `drive_search_files` and `drive_read_file` are offered only when the request's Google chip is on and the grant is active with the matching scope; access tokens refresh within 60 seconds of expiry, and `invalid_grant` marks the grant `needs_reconnect`.
 
 Reference documentation:
 

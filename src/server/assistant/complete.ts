@@ -3,9 +3,10 @@ import type { SpendGuard } from "@/server/db/spend";
 import type { Logger } from "@/server/log";
 import type { ChatMessage, ModelProvider, TokenUsage } from "@/server/providers/model";
 import type { CircuitBreaker } from "./breaker";
-import { executeRouted, newRouteReport, type AttemptBudget, type RouteReport } from "./executor";
+import { EmptyReplyError, executeRouted, newRouteReport, type AttemptBudget, type RouteReport } from "./executor";
 import { nebiusHoldMicroUsd, nebiusSettleMicroUsd } from "./spend";
-import type { TierPlan } from "./tiers";
+import type { RoutingConfig, TierPlan } from "./tiers";
+import type { ToolCall, ToolDefinition } from "./tools";
 
 // Spend bookkeeping shared by every model call the assistant makes: the chat
 // reply (each hop of the tool loop), the conversation title and the session
@@ -132,4 +133,150 @@ export async function completeText(
     await Promise.all(settles);
   }
   return { text: text.slice(0, input.maxChars), model: report.model, usage, report };
+}
+
+/** The plan for a workflow's extraction call: the standard tier, no hedge, 2,048 output tokens (decision 0015). */
+export function extractionPlan(routing: RoutingConfig): TierPlan {
+  return { ...routing.standard, models: [...routing.standard.models], hedgeAfterMs: null, maxOutputTokens: 2048 };
+}
+
+/** Longest text reply read when the model answers a forced tool call with text. */
+const TOOL_TEXT_MAX_CHARS = 16_384;
+
+export type ToolCallFailure = "no_tool_call" | "truncated" | "invalid_json";
+
+export type ToolCallCompletion =
+  | { ok: true; args: unknown; model: string; usage: TokenUsage | null; report: RouteReport }
+  | { ok: false; reason: ToolCallFailure; model: string | null; usage: TokenUsage | null; report: RouteReport };
+
+/** Parses a JSON object from a text reply, with or without a code fence. Undefined when there is none. */
+function jsonFromText(text: string): unknown {
+  const unfenced = text
+    .trim()
+    .replace(/^```[A-Za-z0-9_-]*\s*/, "")
+    .replace(/\s*```\s*$/, "")
+    .trim();
+  const candidates = [unfenced];
+  const start = unfenced.indexOf("{");
+  const end = unfenced.lastIndexOf("}");
+  if (start > 0 && end > start) candidates.push(unfenced.slice(start, end + 1));
+  for (const candidate of candidates) {
+    try {
+      const value: unknown = JSON.parse(candidate);
+      if (value && typeof value === "object" && !Array.isArray(value)) return value;
+    } catch {
+      // Try the next candidate.
+    }
+  }
+  return undefined;
+}
+
+/** A text reply shaped like a tool call ({name, arguments}) gives its arguments. */
+function unwrapTextCall(value: unknown, name: string): unknown {
+  if (!value || typeof value !== "object") return value;
+  const record = value as Record<string, unknown>;
+  const inner = record.arguments ?? record.parameters;
+  if (record.name === name && inner && typeof inner === "object") return inner;
+  if (typeof inner === "string" && record.name === name) {
+    try {
+      return JSON.parse(inner);
+    } catch {
+      return value;
+    }
+  }
+  return value;
+}
+
+/**
+ * One routed call that must answer with a single forced tool call, for a
+ * workflow's extraction step. Every attempt holds its worst case (the tool
+ * definition counts as input) and every hold is settled before this returns.
+ * A text reply (Ollama ignores tool_choice) is read as JSON when it is JSON.
+ * Returns the parsed arguments, unchecked: the caller validates them. Throws
+ * the executor's errors (BudgetExhaustedError, ProviderError,
+ * NebiusHoldTooLargeError) except an empty reply, which is "no_tool_call".
+ */
+export async function completeToolCall(
+  deps: CompletionDeps,
+  input: {
+    requestId: string;
+    plan: TierPlan;
+    messages: ChatMessage[];
+    tool: ToolDefinition;
+    signal: AbortSignal;
+    logFields?: Record<string, string | number | boolean | null | undefined>;
+  },
+): Promise<ToolCallCompletion> {
+  const settles: Promise<void>[] = [];
+  const settle = (hold: NebiusHold, amount: number) => {
+    const settling = settleQuietly(deps, input.requestId, "nebius", hold.reservationId, amount);
+    deps.waitUntil(settling);
+    settles.push(settling);
+  };
+  const name = input.tool.function.name;
+  const tools = [input.tool];
+  const toolBytes = new TextEncoder().encode(JSON.stringify(tools)).length + 64;
+  const report = newRouteReport(input.plan.tier);
+  let text = "";
+  let overflow = false;
+  const calls: ToolCall[] = [];
+  let finishReason: string | null = null;
+  let usage: TokenUsage | null = null;
+  try {
+    for await (const chunk of executeRouted({
+      plan: input.plan,
+      messages: input.messages,
+      provider: deps.provider,
+      budget: attemptBudget(deps, {
+        requestId: input.requestId,
+        plan: input.plan,
+        messages: input.messages,
+        extraInputBytes: toolBytes,
+        settle,
+        logFields: input.logFields,
+      }),
+      breaker: deps.breaker,
+      signal: input.signal,
+      report,
+      random: deps.random,
+      tools,
+      toolChoice: { type: "function", function: { name } },
+    })) {
+      if (chunk.type === "text") {
+        text += chunk.text;
+        if (text.length > TOOL_TEXT_MAX_CHARS) {
+          overflow = true;
+          break;
+        }
+      } else if (chunk.type === "tool_calls") {
+        calls.push(...chunk.calls);
+      } else {
+        finishReason = chunk.finishReason;
+        usage = chunk.usage;
+      }
+    }
+  } catch (error) {
+    await Promise.all(settles);
+    if (error instanceof EmptyReplyError) return { ok: false, reason: "no_tool_call", model: null, usage: null, report };
+    throw error;
+  }
+  await Promise.all(settles);
+
+  const model = report.model;
+  if (overflow || finishReason === "length") return { ok: false, reason: "truncated", model, usage, report };
+  if (!model) return { ok: false, reason: "no_tool_call", model, usage, report };
+  const call = calls.find((c) => c.function.name === name);
+  if (call) {
+    try {
+      const args: unknown = JSON.parse(call.function.arguments.trim() === "" ? "{}" : call.function.arguments);
+      return { ok: true, args, model, usage, report };
+    } catch {
+      return { ok: false, reason: "invalid_json", model, usage, report };
+    }
+  }
+  if (calls.length === 0) {
+    const value = jsonFromText(text);
+    if (value !== undefined) return { ok: true, args: unwrapTextCall(value, name), model, usage, report };
+  }
+  return { ok: false, reason: "no_tool_call", model, usage, report };
 }

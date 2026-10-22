@@ -5,8 +5,7 @@ import { useState } from "react";
 import { LocalTime, useIsClient } from "@/components/ui/LocalTime";
 import { ApiError, errorMessage } from "@/lib/api-client";
 import { MAX_DOCUMENT_CHARS, MAX_DOCUMENT_TITLE_CHARS } from "@/lib/limits";
-import { MODE_LABELS } from "@/lib/mode";
-import type { DocumentDTO, DocumentMediaType, DocumentStatus, Mode } from "@/types/api";
+import type { DocumentDTO, DocumentMediaType, DocumentStatus } from "@/types/api";
 import { deleteDocument, fetchDocuments, uploadDocument } from "./api";
 import { DOCUMENT_ACCEPT, MEDIA_TYPE_LABELS, describeFile, fileSizeProblem, textProblem } from "./file";
 
@@ -37,11 +36,11 @@ function mayHaveSaved(err: unknown): boolean {
 }
 
 /**
- * Documents for one mode: plain text or Markdown the user added. Nothing is
+ * Documents: plain text or Markdown the user added. Nothing is
  * sent until the user checks the title and presses Add; deleting removes the
  * text and its search index at once.
  */
-export function DocumentsPanel({ mode, initialDocuments }: { mode: Mode; initialDocuments: DocumentDTO[] }) {
+export function DocumentsPanel({ initialDocuments }: { initialDocuments: DocumentDTO[] }) {
   const router = useRouter();
   // The server does not know the viewer's locale, so numbers get separators only after hydration.
   const isClient = useIsClient();
@@ -94,7 +93,7 @@ export function DocumentsPanel({ mode, initialDocuments }: { mode: Mode; initial
 
   async function reload() {
     try {
-      setDocuments(await fetchDocuments(mode));
+      setDocuments(await fetchDocuments());
     } catch {
       // The upload error is already shown; the list stays as it was.
     }
@@ -111,7 +110,7 @@ export function DocumentsPanel({ mode, initialDocuments }: { mode: Mode; initial
     setUploading(true);
     setError(null);
     try {
-      const added = await uploadDocument({ mode, title, mediaType: pending.mediaType, text: pending.text });
+      const added = await uploadDocument({ title, mediaType: pending.mediaType, text: pending.text });
       setDocuments((list) => [added, ...list.filter((d) => d.id !== added.id)]);
       setPending(null);
       setStatus(`Added “${added.title}”.`);
@@ -150,8 +149,8 @@ export function DocumentsPanel({ mode, initialDocuments }: { mode: Mode; initial
         </span>
       </div>
       <p className="muted small">
-        Plain text and Markdown files for P-Dot to search in {MODE_LABELS[mode]} mode, up to{" "}
-        {count(MAX_DOCUMENT_CHARS)} characters each. Adding one sends its text to Nebius once, to make it searchable.
+        Text and Markdown files P-Dot can search, up to {count(MAX_DOCUMENT_CHARS)} characters each; the text goes to
+        Nebius once to index it.
       </p>
 
       {pending ? (
@@ -216,16 +215,16 @@ export function DocumentsPanel({ mode, initialDocuments }: { mode: Mode; initial
                     <LocalTime iso={document.createdAt} style="date" />
                   </span>
                   {document.status === "failed" && (
-                    <span className="hint">Could not be processed. Delete it and add the file again.</span>
+                    <span className="hint">Could not be processed; delete it and add the file again.</span>
                   )}
                   {document.status === "processing" && (
-                    <span className="hint">Still processing. If this does not change, delete it and add the file again.</span>
+                    <span className="hint">Still processing; if it stays stuck, delete it and add the file again.</span>
                   )}
                 </div>
                 <span className={`status-pill ${pill.className}`}>{pill.label}</span>
                 {confirmId === document.id ? (
                   <div className="actions" role="group" aria-label={`Delete “${document.title}”?`}>
-                    <span className="small">Delete this document? Its text is removed at once.</span>
+                    <span className="small">Delete this document? Its text goes at once.</span>
                     <button
                       type="button"
                       className="button button-danger button-small"

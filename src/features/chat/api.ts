@@ -1,10 +1,10 @@
 import { ApiError, apiRequest as request } from "@/lib/api-client";
-import type { ChatRequest, ContextRecordDTO, ConversationDetail, ConversationSummary, Mode } from "@/types/api";
+import type { ChatRequest, ContextRecordDTO, ConversationDetail, ConversationSummary } from "@/types/api";
 
 export { ApiError };
 
-export async function fetchConversations(mode: Mode): Promise<ConversationSummary[]> {
-  const response = await request(`/api/conversations?mode=${mode}`);
+export async function fetchConversations(): Promise<ConversationSummary[]> {
+  const response = await request("/api/conversations");
   return ((await response.json()) as { conversations: ConversationSummary[] }).conversations;
 }
 

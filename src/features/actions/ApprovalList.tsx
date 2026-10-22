@@ -4,19 +4,18 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useCallback } from "react";
 import { APPROVAL_MODE_LABELS } from "@/lib/approval-policy";
-import { MODE_LABELS } from "@/lib/mode";
-import type { ActionProposalDTO, Mode } from "@/types/api";
+import type { ActionProposalDTO } from "@/types/api";
 import { ApprovalCard } from "./ApprovalCard";
 import { useApprovalMode } from "./approval-mode";
 import { visibleProposals } from "./format";
 import { useProposals } from "./useProposals";
 
 /**
- * The Today panel: proposals for one mode that are waiting for approval, plus
- * the ones decided here (so the user sees the outcome). Chat shows proposals
- * under the reply that made them instead (features/chat/TurnExtras).
+ * The Today panel: proposals that are waiting for approval, plus the ones
+ * decided here (so the user sees the outcome). Chat shows proposals under the
+ * reply that made them instead (features/chat/TurnExtras).
  */
-export function ApprovalList({ mode, initial }: { mode: Mode; initial?: ActionProposalDTO[] }) {
+export function ApprovalList({ initial }: { initial?: ActionProposalDTO[] }) {
   const router = useRouter();
   const approvalMode = useApprovalMode();
   const toLogin = useCallback(() => router.replace("/login?next=/today"), [router]);
@@ -31,9 +30,8 @@ export function ApprovalList({ mode, initial }: { mode: Mode; initial?: ActionPr
     [decided, router],
   );
 
-  const { visible, waitingInOtherMode } = visibleProposals(proposals, { mode }, decidedHere);
+  const visible = visibleProposals(proposals, {}, decidedHere);
   const waiting = visible.filter((p) => p.status === "proposed").length;
-  const otherMode: Mode = mode === "work" ? "personal" : "work";
 
   return (
     <section className="panel" aria-labelledby="approval-heading">
@@ -51,10 +49,7 @@ export function ApprovalList({ mode, initial }: { mode: Mode; initial?: ActionPr
         </p>
       )}
       {state === "ready" && visible.length === 0 && (
-        <p className="muted">
-          Nothing is waiting. When P-Dot proposes adding a task, a reminder or a memory, it shows up here and in the chat,
-          and nothing happens until you approve it.
-        </p>
+        <p className="muted">Nothing is waiting; proposals from chat appear here until you approve them.</p>
       )}
       {visible.length > 0 && (
         <div className="approval-list">
@@ -68,11 +63,6 @@ export function ApprovalList({ mode, initial }: { mode: Mode; initial?: ActionPr
             />
           ))}
         </div>
-      )}
-      {waitingInOtherMode > 0 && (
-        <p className="hint">
-          {waitingInOtherMode} more waiting in {MODE_LABELS[otherMode]} mode.
-        </p>
       )}
       <p className="hint approval-mode-line">
         Approvals: <strong>{APPROVAL_MODE_LABELS[approvalMode]}</strong> · <Link href="/settings#approvals">Change</Link>

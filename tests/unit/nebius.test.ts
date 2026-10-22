@@ -264,7 +264,7 @@ describe("streamChatCompletion", () => {
         function: {
           name: "web_search" as const,
           description: "Search",
-          parameters: { type: "object" as const, properties: { query: { type: "string" } } },
+          parameters: { type: "object" as const, properties: { query: { type: "string" as const } } },
         },
       },
     ];
@@ -317,6 +317,8 @@ describe("streamChatCompletion", () => {
     expect(sentBody.tool_choice).toBe("auto");
 
     expect(chunks).toEqual([
+      // The tool call started: a text-less progress chunk, so the executor sees the attempt is alive.
+      { type: "reasoning" },
       {
         type: "tool_calls",
         calls: [
@@ -336,6 +338,46 @@ describe("streamChatCompletion", () => {
         usage: { promptTokens: 12, completionTokens: 3 },
       },
     ]);
+  });
+
+  it("yields one progress chunk when each tool call starts, not for each argument piece", async () => {
+    const piece = (index: number, fields: Record<string, unknown>) =>
+      sseEvent({ choices: [{ delta: { tool_calls: [{ index, ...fields }] } }] });
+    const fetchImpl = fetchReturning(
+      sseResponse([
+        piece(0, { id: "a", type: "function", function: { name: "search_memories", arguments: "" } }),
+        piece(0, { function: { arguments: '{"query":' } }),
+        piece(1, { id: "b", type: "function", function: { name: "web_search", arguments: '{"query":"x"}' } }),
+        piece(0, { function: { arguments: '"tea"}' } }),
+        sseEvent(finishChunk("tool_calls")),
+        sseEvent("[DONE]"),
+      ]),
+    );
+    const chunks = await collect(streamChatCompletion(settings, messages, { fetchImpl }));
+    expect(chunks.map((chunk) => chunk.type)).toEqual(["reasoning", "reasoning", "tool_calls", "finish"]);
+    expect(chunks[2]).toMatchObject({
+      calls: [
+        { id: "a", function: { name: "search_memories", arguments: '{"query":"tea"}' } },
+        { id: "b", function: { name: "web_search", arguments: '{"query":"x"}' } },
+      ],
+    });
+  });
+
+  it("sends a forced tool choice naming one function", async () => {
+    const tool = {
+      type: "function" as const,
+      function: { name: "submit_claims", description: "Submit", parameters: { type: "object" as const, properties: {} } },
+    };
+    const fetchImpl = fetchReturning(sseResponse([sseEvent(deltaChunk("x")), sseEvent(finishChunk()), sseEvent("[DONE]")]));
+    await collect(
+      streamChatCompletion(settings, messages, {
+        fetchImpl,
+        tools: [tool],
+        toolChoice: { type: "function", function: { name: "submit_claims" } },
+      }),
+    );
+    const body = JSON.parse(String(fetchImpl.mock.calls[0]![1]?.body));
+    expect(body.tool_choice).toEqual({ type: "function", function: { name: "submit_claims" } });
   });
 });
 

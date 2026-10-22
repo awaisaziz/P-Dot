@@ -20,7 +20,10 @@ export default async function SettingsPage() {
 
   return (
     <main className="page stack">
-      <h1>Settings</h1>
+      <div className="page-intro">
+        <h1>Settings</h1>
+        <p className="muted">Your account, how P-Dot asks before it acts, and what it does with your data.</p>
+      </div>
 
       <section className="card stack" aria-labelledby="account-heading">
         <h2 id="account-heading">Account</h2>
@@ -41,12 +44,11 @@ export default async function SettingsPage() {
 
       <section id="approvals" className="card stack" aria-labelledby="approvals-heading">
         <h2 id="approvals-heading">Approvals</h2>
-        <p>Choose how P-Dot acts on what it suggests in chat. You can also switch with the button next to the message box.</p>
+        <p>Choose how P-Dot acts on what it suggests in chat; you can also switch next to the message box.</p>
         <ApprovalModeOptions />
         <p className="muted small">
-          In Auto, for replies to messages you send while it is on, P-Dot does these on its own and shows them under the
-          reply with Undo: {RUNS_ON_ITS_OWN.join(", ").toLowerCase()}. At most {MAX_AUTO_ACTIONS_PER_REPLY} for one reply;
-          the rest ask.
+          Auto does these on its own with Undo: {RUNS_ON_ITS_OWN.join(", ").toLowerCase()} (at most{" "}
+          {MAX_AUTO_ACTIONS_PER_REPLY} per reply, and none after a Google read or a checked search).
         </p>
         <div className="stack">
           <h3>Always asks, even in Auto</h3>
@@ -57,8 +59,7 @@ export default async function SettingsPage() {
           </ul>
         </div>
         <p className="hint">
-          Your choice is saved on this device. P-Dot does not propose actions in chat yet, so neither mode has anything
-          to do until that step is built. Every action, either way, appears in the <Link href="/action-log">action log</Link>.
+          Saved on this device; every action appears in the <Link href="/action-log">action log</Link>.
         </p>
       </section>
 
@@ -67,82 +68,74 @@ export default async function SettingsPage() {
       <section className="card stack" aria-labelledby="devices-heading">
         <h2 id="devices-heading">Devices</h2>
         <p>
-          See how this device is set up, and how pairing your laptop and phone will work.{" "}
-          <Link href="/devices">Open devices</Link>
+          See how this device is set up and how pairing will work. <Link href="/devices">Open devices</Link>
         </p>
       </section>
 
       <section className="card stack" aria-labelledby="data-heading">
         <h2 id="data-heading">How your data is used</h2>
-        <ul className="plain-list">
+        <ul className="plain-list data-use-list">
           <li>
-            <strong>Inference (Nebius Token Factory):</strong> each message you send, together with recent
-            messages from the same conversation, is sent to Nebius to generate the reply.
+            <strong>Inference (Nebius Token Factory):</strong> each message and recent messages from that chat go to
+            Nebius to write the reply.
           </li>
           <li>
-            <strong>Web search (Tavily):</strong> only when you turn on web search for a message, the text of
-            that message is sent to Tavily as the search query. Retrieved excerpts are then sent to Nebius as
-            context.
+            <strong>Web search (Tavily):</strong> search queries P-Dot writes, flight checks and, with search on, your
+            message go to Tavily; excerpts go to Nebius as context.
           </li>
           <li>
-            <strong>Voice dictation:</strong> the microphone button uses your browser&apos;s built-in speech
-            recognition to turn speech into English text. Your browser vendor&apos;s speech service may process the
-            audio; P-Dot&apos;s servers only receive the text you choose to send.
+            <strong>Flight checks</strong> read travel pages through Tavily; fares shown are quoted from those pages with
+            their source and time, never booked.
           </li>
           <li>
-            <strong>Personal and Work modes:</strong> each conversation and to-do item belongs to one mode, and the
-            assistant stays within that mode&apos;s topics.
+            <strong>Google (read only):</strong> P-Dot reads your calendar and Drive only while Google is on in chat,
+            and keeps its access encrypted. Content read for a reply is sent to Nebius to write that reply. The reply,
+            and anything it quotes, is saved in your conversation and sent again as context in later messages there.
+            Disconnecting stops new reads but does not delete past conversations.{" "}
+            <Link href="/connectors">Manage Google</Link>
           </li>
           <li>
-            <strong>Memory:</strong> when you save or edit a memory, its text is sent to Nebius once to make it
-            searchable (an embedding). Memories are not used in replies yet. You can see, change and delete all of them
-            on the <Link href="/memory">Memory</Link> page.
+            <strong>Voice dictation:</strong> your browser&apos;s own speech service turns speech into text; P-Dot only
+            receives the text you send.
           </li>
           <li>
-            <strong>Documents:</strong> when you add a text or Markdown file, its text is sent to Nebius once, in
-            parts, to make it searchable. Documents are not used in replies yet. They are listed, and can be deleted,
-            on the <Link href="/memory#documents">Memory</Link> page.
+            <strong>Memory:</strong> memory text is embedded once on Nebius and relevant memories are used in replies;
+            see, change or delete them on the <Link href="/memory">Memory</Link> page.
           </li>
           <li>
-            <strong>Approvals:</strong> when P-Dot proposes adding a task, a reminder or a memory, nothing happens
-            until you approve it. You can edit the proposal first or cancel it.
+            <strong>Documents:</strong> file text is embedded once on Nebius and relevant parts are used in replies;
+            list or delete them on the <Link href="/memory#documents">Memory</Link> page.
           </li>
           <li>
-            <strong>What was sent:</strong> for each reply, P-Dot records which model answered and how much context it
-            received (counts and IDs, not a copy of the text). Open it with &ldquo;What was sent&rdquo; under a reply.
+            <strong>Approvals:</strong> nothing P-Dot proposes happens until you approve it, except what Auto adds with
+            Undo.
           </li>
           <li>
-            <strong>Action log:</strong> approvals, cancellations, completed actions and changes to memories,
-            documents and reminders are recorded without their text, and cannot be edited or deleted. See the{" "}
-            <Link href="/action-log">action log</Link>.
+            <strong>What was sent:</strong> each reply records which model answered and what context it got (counts and
+            IDs only), shown under the reply.
           </li>
           <li>
-            <strong>Storage (Supabase):</strong> your account, conversations, tasks, memories, documents, reminders and
-            the action log are stored in a Supabase database, visible only to your account.
+            <strong>Action log:</strong> decisions, runs and data changes are recorded without their text and cannot be
+            edited; see the <Link href="/action-log">action log</Link>.
           </li>
           <li>
-            <strong>Logs:</strong> the server logs request metadata (timing, status, error type) but not your
-            message text or search queries.
+            <strong>Storage (Supabase):</strong> your account and everything you save are stored in Supabase, visible
+            only to your account.
+          </li>
+          <li>
+            <strong>Logs:</strong> the server logs timing, status and error type, never your messages or search queries.
           </li>
         </ul>
       </section>
 
       <section className="card stack" aria-labelledby="retention-heading">
         <h2 id="retention-heading">Retention and deletion</h2>
-        <p>
-          Conversations are kept until you delete them. Deleting a conversation from the chat sidebar removes
-          it and its messages from the active database immediately. Database backups may keep a copy until
-          they expire according to the hosting plan&apos;s backup retention.
-        </p>
-        <p>
-          Deleting a memory or a document removes its text and search vector at once. Action proposals and the action
-          log are kept as an audit record and cannot be deleted from the app; they hold kinds, counts and IDs, and a
-          proposal also keeps the details you were asked to approve.
-        </p>
-        <p className="muted">
-          Self-service account deletion is not available yet. The final retention policy is still being
-          decided and will be published before public release.
-        </p>
+        <ul className="plain-list">
+          <li>Conversations stay until you delete them; backups may keep a copy until they expire.</li>
+          <li>Deleting a memory or document removes it at once; proposals and the action log stay as an audit record.</li>
+          <li>Disconnecting Google deletes its stored access at once and asks Google to revoke it.</li>
+          <li className="muted">Account deletion and the final retention policy are still to come.</li>
+        </ul>
       </section>
     </main>
   );

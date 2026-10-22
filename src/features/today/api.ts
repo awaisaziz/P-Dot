@@ -1,11 +1,11 @@
-import type { ApiErrorBody, Mode, TaskDTO } from "@/types/api";
+import type { ApiErrorBody, TaskDTO } from "@/types/api";
 
 async function request(path: string, init?: RequestInit): Promise<Response> {
   let response: Response;
   try {
     response = await fetch(path, { ...init, credentials: "same-origin", cache: "no-store" });
   } catch {
-    throw new Error("Could not reach the server. Check your connection and retry.");
+    throw new Error("Could not reach the server; check your connection and retry.");
   }
   if (!response.ok) {
     let message = "Something went wrong. Please retry.";
@@ -22,11 +22,11 @@ async function request(path: string, init?: RequestInit): Promise<Response> {
 
 const jsonHeaders = { "Content-Type": "application/json" };
 
-export async function createTask(mode: Mode, title: string): Promise<TaskDTO> {
+export async function createTask(title: string): Promise<TaskDTO> {
   const response = await request("/api/tasks", {
     method: "POST",
     headers: jsonHeaders,
-    body: JSON.stringify({ mode, title }),
+    body: JSON.stringify({ title }),
   });
   return (await response.json()) as TaskDTO;
 }

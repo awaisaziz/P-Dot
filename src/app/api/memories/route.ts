@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { MAX_CHAT_BODY_BYTES, MEMORY_LIST_LIMIT } from "@/lib/limits";
-import { createMemorySchema, modeSchema } from "@/lib/schemas";
+import { WORKSPACE_MODE } from "@/lib/mode";
+import { createMemorySchema } from "@/lib/schemas";
 import { createMemoryRepository } from "@/server/db/memories";
 import { readJsonBody } from "@/server/http/request";
 import { errorResponse, jsonResponse } from "@/server/http/responses";
@@ -10,13 +11,13 @@ import type { MemoryStatus } from "@/types/api";
 
 const statusFilterSchema = z.enum(["proposed", "active"]);
 
-/** GET /api/memories?mode=personal|work&status=proposed|active: the user's memories. */
+/**
+ * GET /api/memories?status=proposed|active: every memory of the user. A `?mode=`
+ * from an older tab is ignored (decision 0014).
+ */
 export async function GET(request: Request): Promise<Response> {
   return withAuthenticatedRoute(request, { route: "memories.list" }, async ({ auth, requestId }) => {
     const params = new URL(request.url).searchParams;
-
-    const mode = modeSchema.safeParse(params.get("mode"));
-    if (!mode.success) return errorResponse(400, "invalid_request", "Choose a mode: personal or work.", requestId);
 
     // The status filter is optional. When it is sent, it must be a valid value.
     let status: MemoryStatus | undefined;
@@ -29,17 +30,12 @@ export async function GET(request: Request): Promise<Response> {
       status = parsed.data;
     }
 
-    const memories = await createMemoryRepository(auth.supabase).listMemories(
-      auth.userId,
-      mode.data,
-      status,
-      MEMORY_LIST_LIMIT,
-    );
+    const memories = await createMemoryRepository(auth.supabase).listMemories(auth.userId, status, MEMORY_LIST_LIMIT);
     return jsonResponse({ memories }, requestId);
   });
 }
 
-/** POST /api/memories: save a memory the user typed. Body: { mode, content }. */
+/** POST /api/memories: save a memory the user typed. Body: { content, mode? }; a sent mode is ignored and it gets WORKSPACE_MODE. */
 export async function POST(request: Request): Promise<Response> {
   return withAuthenticatedRoute(request, { route: "memories.create", sameOrigin: true }, async ({ auth, requestId }) => {
     const body = await readJsonBody(request, MAX_CHAT_BODY_BYTES);
@@ -53,7 +49,7 @@ export async function POST(request: Request): Promise<Response> {
     const memory = await createMemoryRepository(auth.supabase).createMemory(
       auth.userId,
       {
-        mode: parsed.data.mode,
+        mode: WORKSPACE_MODE,
         content: parsed.data.content,
         status: "active",
         source: "user",

@@ -149,3 +149,97 @@ describe("SSE and HTTP errors through the adapter and the executor", () => {
     expect(error).toMatchObject({ kind: "invalid_request", status: 400 });
   });
 });
+
+/** An SSE body whose events arrive at the given times (setTimeout, so fake timers drive it). */
+function timedSse(events: { atMs: number; payload: unknown }[], endAtMs: number): ReadableStream<Uint8Array> {
+  const encoder = new TextEncoder();
+  return new ReadableStream<Uint8Array>({
+    start(controller) {
+      // The reader may cancel early (after [DONE]); later writes are then ignored.
+      const safely = (write: () => void) => () => {
+        try {
+          write();
+        } catch {
+          // Already cancelled.
+        }
+      };
+      for (const event of events) {
+        setTimeout(safely(() => controller.enqueue(encoder.encode(sseEvent(event.payload)))), event.atMs);
+      }
+      setTimeout(safely(() => controller.close()), endAtMs);
+    },
+  });
+}
+
+describe("a tool-only stream through the adapter and the executor", () => {
+  it("finishes a 6 s forced tool call on the first model with one hold, no hedge and no timeout", async () => {
+    vi.useFakeTimers();
+    try {
+      const fastPlan: TierPlan = { ...plan, hedgeAfterMs: 1_500, firstTokenTimeoutMs: 5_000 };
+      const piece = (fields: Record<string, unknown>) => ({ choices: [{ index: 0, delta: { tool_calls: [{ index: 0, ...fields }] } }] });
+      // The call starts at 1 s; its arguments trickle in until 6 s. No text ever arrives.
+      const events = [
+        { atMs: 1_000, payload: piece({ id: "call_1", type: "function", function: { name: "submit_claims", arguments: "" } }) },
+        ...[2_000, 3_000, 4_000, 5_000].map((atMs, i) => ({
+          atMs,
+          payload: piece({ function: { arguments: ['{"items"', ":[", '{"claim":"a"}', "]"][i]! } }),
+        })),
+        { atMs: 6_000, payload: { choices: [{ index: 0, delta: { tool_calls: [{ index: 0, function: { arguments: "}" } }] } }] } },
+        { atMs: 6_000, payload: finishChunk("tool_calls") },
+        { atMs: 6_000, payload: "[DONE]" },
+      ];
+      const models: string[] = [];
+      const fetchImpl = vi.fn<typeof fetch>(async (_url, init) => {
+        models.push((JSON.parse(String(init?.body)) as { model: string }).model);
+        return new Response(timedSse(events, 6_001), { status: 200 });
+      });
+      const holds: string[] = [];
+      const settles: { sent: boolean }[] = [];
+      const budget: AttemptBudget = {
+        async reserve(model) {
+          holds.push(model);
+          return { allowed: true, hold: { reservationId: `r${holds.length}`, heldMicroUsd: 1 } };
+        },
+        settle(_hold, _model, outcome) {
+          settles.push({ sent: outcome.sent });
+        },
+      };
+      const report = newRouteReport("fast");
+      const tool = {
+        type: "function" as const,
+        function: { name: "submit_claims", description: "Submit", parameters: { type: "object" as const, properties: {} } },
+      };
+      const run = (async () => {
+        const chunks = [];
+        for await (const chunk of executeRouted({
+          plan: fastPlan,
+          messages: [{ role: "user", content: "pages" }],
+          provider: createNebiusProvider({ apiKey: "k", baseUrl: "https://nebius.test/v1" }, { fetchImpl }),
+          budget,
+          breaker: createCircuitBreaker({ threshold: 3, cooldownMs: 30_000 }),
+          signal: new AbortController().signal,
+          report,
+          random: () => 0,
+          tools: [tool],
+          toolChoice: { type: "function", function: { name: "submit_claims" } },
+        })) {
+          chunks.push(chunk);
+        }
+        return chunks;
+      })();
+      await vi.advanceTimersByTimeAsync(7_000);
+      const chunks = await run;
+
+      expect(models).toEqual([A]);
+      expect(holds).toEqual([A]);
+      expect(settles).toEqual([{ sent: true }]);
+      expect(report).toMatchObject({ hedgeFired: false, model: A, fallback: false, outcome: "ok", attempts: 1 });
+      // The reply commits when the complete tool call arrives.
+      expect(report.firstTokenMs).toBe(6_000);
+      expect(chunks.map((chunk) => chunk.type)).toEqual(["tool_calls", "finish"]);
+      expect(chunks[0]).toMatchObject({ calls: [{ function: { name: "submit_claims", arguments: '{"items":[{"claim":"a"}]}' } }] });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});

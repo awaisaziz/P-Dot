@@ -15,7 +15,10 @@ const idSchema = z.uuid();
 
 const memoryNotFound = (requestId: string) => errorResponse(404, "not_found", "Memory not found.", requestId);
 
-/** PATCH /api/memories/:id: edit the text or mode, or approve a proposed memory. */
+/**
+ * PATCH /api/memories/:id: edit the text or approve a proposed memory. A sent
+ * mode is ignored (decision 0014), so a body with only a mode changes nothing.
+ */
 export async function PATCH(request: Request, context: Context): Promise<Response> {
   return withAuthenticatedRoute(request, { route: "memories.update", sameOrigin: true }, async ({ auth, requestId }) => {
     const id = idSchema.safeParse((await context.params).id);
@@ -36,13 +39,12 @@ export async function PATCH(request: Request, context: Context): Promise<Respons
 
     // Only a changed text needs a new vector. The same text is not written at
     // all, so it cannot put old text back next to a newer text's vector. A
-    // mode or status change keeps the stored vector and model.
-    const changes = { ...parsed.data };
-    if (changes.content === existing.content) delete changes.content;
+    // status change keeps the stored vector and model. The mode is never written.
+    const changes: { content?: string; status?: "active" } = {};
+    if (parsed.data.content !== undefined && parsed.data.content !== existing.content) changes.content = parsed.data.content;
+    if (parsed.data.status !== undefined) changes.status = parsed.data.status;
+    if (changes.content === undefined && changes.status === undefined) return jsonResponse(existing, requestId);
     const embedding = changes.content === undefined ? undefined : await embedMemoryText(auth, requestId, changes.content);
-    if (changes.content === undefined && changes.mode === undefined && changes.status === undefined) {
-      return jsonResponse(existing, requestId);
-    }
 
     // The update applies only while the text is still the one read above.
     // If another edit came first, the client reloads instead.

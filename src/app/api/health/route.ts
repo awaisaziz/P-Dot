@@ -1,5 +1,6 @@
 import { isSupabaseConfigured } from "@/lib/supabase-config";
 import { getAssistantConfig } from "@/server/config";
+import { getConnectorConfig } from "@/server/connectors/config";
 
 export const dynamic = "force-dynamic";
 
@@ -18,12 +19,18 @@ export function GET(): Response {
   } catch {
     // Not configured.
   }
+  let google = false;
+  try {
+    google = getConnectorConfig() !== null;
+  } catch {
+    // Malformed: reported as not configured.
+  }
 
   return Response.json(
     {
       status: "ok",
       time: new Date().toISOString(),
-      configured: { auth: isSupabaseConfigured(), inference, webSearch },
+      configured: { auth: isSupabaseConfigured(), inference, webSearch, connectors: { google } },
     },
     { headers: { "Cache-Control": "no-store" } },
   );

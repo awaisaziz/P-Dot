@@ -12,20 +12,14 @@ export default async function ActionLogPage() {
 
   return (
     <main className="page stack">
-      <div>
+      <div className="page-intro">
         <h1>Action log</h1>
-        <p className="muted">
-          A record of what P-Dot proposed, what you approved or cancelled, what ran, and every change to your memories,
-          documents and reminders. It covers both modes. Entries cannot be edited or deleted.
-        </p>
+        <p className="muted">A permanent record of every proposal, decision, run, Google connection and change to your data.</p>
       </div>
 
       <ActionLogList initialEntries={entries} limit={ACTION_LOG_LIMIT} />
 
-      <p className="hint">
-        The log keeps kinds, counts and IDs only, never the text of your messages, tasks, memories or documents. To-do
-        items you add or tick off yourself on the Today page are not logged.
-      </p>
+      <p className="hint">Kinds, counts and IDs only, never your text; to-dos you add yourself are not logged.</p>
     </main>
   );
 }

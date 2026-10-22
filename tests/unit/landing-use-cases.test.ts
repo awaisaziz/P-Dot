@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { USE_CASES } from "@/features/landing/DynamicAgentCard";
+import { USE_CASES, isAfterApproval } from "@/features/landing/DynamicAgentCard";
 
 describe("landing page dynamic use cases", () => {
   it("provides multiple diverse use cases demonstrating personal bot usage", () => {
@@ -41,6 +41,35 @@ describe("landing page dynamic use cases", () => {
       expect(approvalStep?.approvedDetail).toBeTruthy();
       expect(approvalStep?.skippedDetail).toBeTruthy();
     }
+  });
+
+  it("never shows a web search after a Google read in the same run (decision 0015, tainted replies)", () => {
+    for (const useCase of USE_CASES) {
+      const firstRead = useCase.steps.findIndex((s) => s.tool === "Calendar" || s.tool === "Drive");
+      if (firstRead === -1) continue;
+      const later = useCase.steps.slice(firstRead + 1).map((s) => s.tool);
+      expect(later, useCase.id).not.toContain("Search");
+    }
+  });
+
+  it("never shows a Google read after a web search or a flight check (decision 0015, tainted replies)", () => {
+    for (const useCase of USE_CASES) {
+      const firstSearch = useCase.steps.findIndex((s) => s.tool === "Search");
+      if (firstSearch === -1) continue;
+      const later = useCase.steps.slice(firstSearch + 1).map((s) => s.tool);
+      expect(later, useCase.id).not.toContain("Calendar");
+      expect(later, useCase.id).not.toContain("Drive");
+    }
+  });
+
+  it("lets every step after the approval follow the approve or skip choice", () => {
+    const flights = USE_CASES.find((c) => c.id === "flights")!;
+    const approval = flights.steps.findIndex((s) => s.state === "approval");
+    expect(flights.steps.map((_, index) => isAfterApproval(flights.steps, index))).toEqual(
+      flights.steps.map((_, index) => index > approval),
+    );
+    expect(isAfterApproval(flights.steps, flights.steps.length - 1)).toBe(true);
+    expect(isAfterApproval([{ title: "Only", state: "done" }], 0)).toBe(false);
   });
 
   it("covers key tool integrations across scenarios", () => {

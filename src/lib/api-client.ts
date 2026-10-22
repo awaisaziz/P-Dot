@@ -29,7 +29,7 @@ export async function apiRequest(path: string, init?: RequestInit): Promise<Resp
     response = await fetch(path, { ...init, credentials: "same-origin", cache: "no-store" });
   } catch (error) {
     if (error instanceof DOMException && error.name === "AbortError") throw error;
-    throw new ApiError(0, "network_error", "Could not reach the server. Check your connection and retry.");
+    throw new ApiError(0, "network_error", "Could not reach the server; check your connection and retry.");
   }
   if (!response.ok) throw await toApiError(response);
   return response;

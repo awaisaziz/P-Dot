@@ -5,7 +5,6 @@ import { useId, useState } from "react";
 import { formatLocal } from "@/components/ui/LocalTime";
 import { ApiError, errorMessage } from "@/lib/api-client";
 import { MAX_MEMORY_CHARS, MAX_REMINDER_TITLE_CHARS, MAX_TASK_CHARS } from "@/lib/limits";
-import { MODE_LABELS } from "@/lib/mode";
 import type { ActionPayload, ActionProposalDTO, Mode } from "@/types/api";
 import { decideAction } from "./api";
 import {
@@ -19,6 +18,7 @@ import {
 } from "./format";
 
 interface Draft {
+  /** Kept from the payload unchanged; the card never shows it (decision 0014). */
   mode: Mode;
   /** Task or reminder title, or memory text. */
   text: string;
@@ -115,7 +115,7 @@ export function ApprovalCard({
         setError(errorMessage(err, "The action could not be completed."));
         onStale?.();
       } else {
-        setError(errorMessage(err, "Could not send your decision. Please retry."));
+        setError(errorMessage(err, "Could not send your decision; please retry."));
       }
     } finally {
       setBusy(null);
@@ -159,7 +159,7 @@ export function ApprovalCard({
         {proposal.summary}
       </p>
       {approvedEdit && (
-        <p className="hint">P-Dot&apos;s suggestion. You changed it before approving; the details below are what was done.</p>
+        <p className="hint">You edited this before approving; the details below are what ran.</p>
       )}
       {waiting && askReason && (
         <p className="approval-ask-reason small">
@@ -205,21 +205,6 @@ export function ApprovalCard({
               />
             </div>
           )}
-          <div className="field">
-            <label htmlFor={`${id}-mode`}>List</label>
-            <select
-              id={`${id}-mode`}
-              className="form-control"
-              value={draft.mode}
-              onChange={(event) => setDraft({ ...draft, mode: event.target.value as Mode })}
-            >
-              {(Object.keys(MODE_LABELS) as Mode[]).map((mode) => (
-                <option key={mode} value={mode}>
-                  {MODE_LABELS[mode]}
-                </option>
-              ))}
-            </select>
-          </div>
           <div className="actions">
             <button type="submit" className="button button-primary button-small" disabled={busy !== null}>
               {busy === "approve" ? "Approving…" : "Approve with changes"}
@@ -274,17 +259,17 @@ export function ApprovalCard({
         </div>
       )}
 
-      {unconfirmed && <p className="approval-outcome small muted">Marked done. {UNCONFIRMED_HINT}</p>}
+      {unconfirmed && <p className="approval-outcome small muted">Marked done; {UNCONFIRMED_HINT}</p>}
       {proposal.status === "executed" && !unconfirmed && (
         <p className="approval-outcome small">
           {approvedEdit ? "Done, with your changes. " : "Done. "}
           <Link href={KIND_RESULT_LINKS[kind].href}>{KIND_RESULT_LINKS[kind].label}</Link>
         </p>
       )}
-      {proposal.status === "rejected" && <p className="approval-outcome small muted">Cancelled. Nothing was changed.</p>}
+      {proposal.status === "rejected" && <p className="approval-outcome small muted">Cancelled; nothing changed.</p>}
       {proposal.status === "failed" && (
         <p className="alert alert-error small" role="alert">
-          This action could not be completed. Nothing else was changed.
+          Could not be completed; nothing else changed.
         </p>
       )}
       {/* A failed run is already explained above; other errors (a lost connection, a decision made elsewhere) are not. */}

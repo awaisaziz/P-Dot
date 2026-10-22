@@ -36,6 +36,26 @@ describe("chatRequestSchema", () => {
     const body = { action: "send", message: "x".repeat(MAX_MESSAGE_CHARS), webSearch: false };
     expect(chatRequestSchema.safeParse(body).success).toBe(true);
   });
+
+  it("accepts the browser's time zone and the Google chip on send and on retry", () => {
+    const send = { action: "send", message: "hi", webSearch: false, timeZone: "America/Argentina/Buenos_Aires", connectors: { google: true } };
+    expect(chatRequestSchema.safeParse(send).data).toEqual(send);
+    const retry = { action: "retry", conversationId: ID, webSearch: false, timeZone: "Etc/GMT+5", connectors: { google: false } };
+    expect(chatRequestSchema.safeParse(retry).success).toBe(true);
+    // Both are optional; a missing chip means off.
+    expect(chatRequestSchema.safeParse({ action: "send", message: "hi", webSearch: false, connectors: {} }).success).toBe(true);
+  });
+
+  it.each([
+    ["a time zone over 64 characters", { timeZone: `Europe/${"x".repeat(60)}` }],
+    ["a time zone with markup", { timeZone: "<script>" }],
+    ["an empty time zone", { timeZone: " " }],
+    ["a time zone that is not text", { timeZone: 5 }],
+    ["an unknown connector", { connectors: { slack: true } }],
+    ["a chip that is not a boolean", { connectors: { google: "yes" } }],
+  ])("rejects %s", (_label, extra) => {
+    expect(chatRequestSchema.safeParse({ action: "send", message: "hi", webSearch: false, ...extra }).success).toBe(false);
+  });
 });
 
 describe("newPasswordSchema", () => {

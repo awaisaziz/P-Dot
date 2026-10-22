@@ -31,6 +31,11 @@ export const ALLOWED_NAMES = new Set([
   "TAVILY_DAILY_CREDITS",
   "TAVILY_MONTHLY_CREDITS",
   "TAVILY_USER_DAILY_CREDITS",
+  // Google connectors (decision 0016). The client ID is public; GOOGLE_CLIENT_SECRET and
+  // CONNECTOR_TOKEN_KEYS are secrets and must never be added here.
+  "GOOGLE_CLIENT_ID",
+  "CONNECTOR_TOKEN_KEY_VERSION",
+  "CONNECTOR_ALLOWED_USER_IDS",
 ]);
 
 /** Returns "mode.NAME" for each variable that has a value but is not allowed. Names only, never values. */

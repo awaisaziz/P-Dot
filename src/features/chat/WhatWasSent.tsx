@@ -3,8 +3,10 @@
 import { useEffect, useId, useRef, useState } from "react";
 import { LocalTime } from "@/components/ui/LocalTime";
 import { ApiError, errorMessage } from "@/lib/api-client";
+import { googleSentRow, type GoogleSentRow } from "@/features/results/format";
 import { modelDisplayName } from "@/lib/routing";
 import type { ContextRecordDTO } from "@/types/api";
+import type { MessageResult, WorkflowStep } from "@/types/workflows";
 import { fetchContextRecord } from "./api";
 
 type LoadState =
@@ -26,7 +28,19 @@ function plural(count: number, one: string, many = `${one}s`): string {
  * context it received. Loaded only when opened. P-Dot stores counts and IDs
  * for this, not a second copy of the text.
  */
-export function WhatWasSent({ messageId, createdAt }: { messageId: string; createdAt: string }) {
+export function WhatWasSent({
+  messageId,
+  createdAt,
+  payload,
+}: {
+  messageId: string;
+  createdAt: string;
+  /**
+   * The reply's saved results and steps, the only record of what it read from
+   * Google. `trimmed`: cut to fit, so counts may be partial. Undefined: none saved.
+   */
+  payload?: { results: readonly MessageResult[]; steps: readonly WorkflowStep[]; trimmed?: boolean };
+}) {
   const id = useId();
   const [open, setOpen] = useState(false);
   const [load, setLoad] = useState<LoadState>({ status: "idle" });
@@ -69,17 +83,14 @@ export function WhatWasSent({ messageId, createdAt }: { messageId: string; creat
           {load.status === "loading" && <p className="muted small">Loading…</p>}
           {load.status === "missing" && load.recent && (
             <p className="muted small">
-              P-Dot saves this record just after the reply, so it may not be ready yet.{" "}
+              This record is saved just after the reply; it may not be ready yet.{" "}
               <button type="button" className="link-button" onClick={fetchRecord}>
                 Check again
               </button>
             </p>
           )}
           {load.status === "missing" && !load.recent && (
-            <p className="muted small">
-              No record for this reply. Replies from before P-Dot started recording what it sends, and replies whose
-              record could not be saved, have none.
-            </p>
+            <p className="muted small">No record for this reply (older replies and failed saves have none).</p>
           )}
           {load.status === "error" && (
             <p className="alert alert-error small" role="alert">
@@ -89,14 +100,14 @@ export function WhatWasSent({ messageId, createdAt }: { messageId: string; creat
               </button>
             </p>
           )}
-          {load.status === "ready" && <RecordDetails record={load.record} />}
+          {load.status === "ready" && <RecordDetails record={load.record} google={googleSentRow(payload)} />}
         </div>
       )}
     </div>
   );
 }
 
-function RecordDetails({ record }: { record: ContextRecordDTO }) {
+function RecordDetails({ record, google }: { record: ContextRecordDTO; google: GoogleSentRow }) {
   const deletedMemories = record.memories.filter((m) => m.content === null).length;
   const keptMemories = record.memories.filter((m) => m.content !== null);
   const documents = [...new Set(record.documentChunks.map((c) => c.title ?? "A document you have since deleted"))];
@@ -150,6 +161,20 @@ function RecordDetails({ record }: { record: ContextRecordDTO }) {
           <dd>{record.webSourceCount === 0 ? "Not used" : `${plural(record.webSourceCount, "excerpt")} from Tavily`}</dd>
         </div>
         <div>
+          <dt>Google</dt>
+          <dd>
+            {google.lines.length === 0 ? (
+              google.none
+            ) : (
+              <ul className="plain-list">
+                {google.lines.map((line) => (
+                  <li key={line}>{line}</li>
+                ))}
+              </ul>
+            )}
+          </dd>
+        </div>
+        <div>
           <dt>Tokens</dt>
           <dd>
             {record.inputTokens === null || record.outputTokens === null
@@ -169,8 +194,8 @@ function RecordDetails({ record }: { record: ContextRecordDTO }) {
         </div>
       </dl>
       <p className="hint">
-        Everything above went to Nebius to write this reply. P-Dot keeps these counts and IDs, not a second copy of your
-        text. Memories and documents show their current text; deleting one removes it here too.
+        All of this went to Nebius for the reply; this record keeps only counts and IDs, so deleted memories or
+        documents disappear here too.
       </p>
     </>
   );

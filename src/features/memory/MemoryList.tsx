@@ -5,15 +5,14 @@ import { useId, useState } from "react";
 import { LocalTime } from "@/components/ui/LocalTime";
 import { ApiError } from "@/lib/api-client";
 import { MAX_MEMORY_CHARS } from "@/lib/limits";
-import { MODE_LABELS } from "@/lib/mode";
-import type { MemoryDTO, Mode } from "@/types/api";
+import type { MemoryDTO } from "@/types/api";
 import { createMemory, deleteMemory, memoryErrorMessage as friendlyError, updateMemory } from "./api";
 
 /**
- * Everything P-Dot remembers for one mode: memories the user added, and ones
- * P-Dot suggested. A suggestion is not used until the user keeps it.
+ * Everything P-Dot remembers: memories the user added, and ones P-Dot
+ * suggested. A suggestion is not used until the user keeps it.
  */
-export function MemoryList({ mode, initialMemories }: { mode: Mode; initialMemories: MemoryDTO[] }) {
+export function MemoryList({ initialMemories }: { initialMemories: MemoryDTO[] }) {
   const router = useRouter();
   const [memories, setMemories] = useState(initialMemories);
   const [draft, setDraft] = useState("");
@@ -37,7 +36,7 @@ export function MemoryList({ mode, initialMemories }: { mode: Mode; initialMemor
     setAdding(true);
     setError(null);
     try {
-      const memory = await createMemory(mode, content);
+      const memory = await createMemory(content);
       setMemories((list) => [memory, ...list]);
       setDraft("");
       setStatus("Memory saved.");
@@ -49,10 +48,7 @@ export function MemoryList({ mode, initialMemories }: { mode: Mode; initialMemor
   }
 
   function replace(updated: MemoryDTO) {
-    setMemories((list) =>
-      // A memory moved to the other mode leaves this list.
-      updated.mode === mode ? list.map((m) => (m.id === updated.id ? updated : m)) : list.filter((m) => m.id !== updated.id),
-    );
+    setMemories((list) => list.map((m) => (m.id === updated.id ? updated : m)));
   }
 
   function remove(id: string) {
@@ -63,21 +59,20 @@ export function MemoryList({ mode, initialMemories }: { mode: Mode; initialMemor
   const shown = needle ? memories.filter((m) => m.content.toLowerCase().includes(needle)) : memories;
   const proposed = shown.filter((m) => m.status === "proposed");
   const active = shown.filter((m) => m.status === "active");
-  const otherMode: Mode = mode === "work" ? "personal" : "work";
 
   return (
     <div className="stack">
       <form className="panel" onSubmit={(event) => void add(event)} aria-labelledby="add-memory-heading">
         <h2 id="add-memory-heading">Add a memory</h2>
         <div className="field">
-          <label htmlFor="new-memory">Something P-Dot should know about you ({MODE_LABELS[mode]})</label>
+          <label htmlFor="new-memory">Something P-Dot should know about you</label>
           <textarea
             id="new-memory"
             className="form-control"
             rows={2}
             value={draft}
             maxLength={MAX_MEMORY_CHARS}
-            placeholder={mode === "work" ? "For example: I write release notes every Friday." : "For example: I'm vegetarian."}
+            placeholder="For example: I'm vegetarian."
             onChange={(event) => setDraft(event.target.value)}
           />
         </div>
@@ -85,7 +80,7 @@ export function MemoryList({ mode, initialMemories }: { mode: Mode; initialMemor
           <button type="submit" className="button button-primary" disabled={adding || !draft.trim()}>
             {adding ? "Saving…" : "Save memory"}
           </button>
-          <span className="hint">Saving sends the text to Nebius once, to make it searchable.</span>
+          <span className="hint">Saving sends the text to Nebius once to index it.</span>
         </div>
       </form>
 
@@ -120,7 +115,6 @@ export function MemoryList({ mode, initialMemories }: { mode: Mode; initialMemor
               <MemoryItem
                 key={memory.id}
                 memory={memory}
-                otherMode={otherMode}
                 onChanged={replace}
                 onDeleted={remove}
                 onError={onError}
@@ -140,7 +134,7 @@ export function MemoryList({ mode, initialMemories }: { mode: Mode; initialMemor
         </div>
         {active.length === 0 && (
           <p className="muted">
-            {needle ? "No memories match the filter." : `P-Dot remembers nothing in ${MODE_LABELS[mode]} mode yet.`}
+            {needle ? "No memories match the filter." : "P-Dot remembers nothing yet."}
           </p>
         )}
         <ul className="memory-list">
@@ -148,7 +142,6 @@ export function MemoryList({ mode, initialMemories }: { mode: Mode; initialMemor
             <MemoryItem
               key={memory.id}
               memory={memory}
-              otherMode={otherMode}
               onChanged={replace}
               onDeleted={remove}
               onError={onError}
@@ -167,14 +160,12 @@ export function MemoryList({ mode, initialMemories }: { mode: Mode; initialMemor
 
 function MemoryItem({
   memory,
-  otherMode,
   onChanged,
   onDeleted,
   onError,
   onStatus,
 }: {
   memory: MemoryDTO;
-  otherMode: Mode;
   onChanged: (memory: MemoryDTO) => void;
   onDeleted: (id: string) => void;
   onError: (err: unknown, fallback: string) => void;
@@ -228,12 +219,6 @@ function MemoryItem({
       onStatus("Memory kept.");
     }, "Could not keep the memory.");
 
-  const move = () =>
-    void run(async () => {
-      onChanged(await updateMemory(memory.id, { mode: otherMode }));
-      onStatus(`Memory moved to ${MODE_LABELS[otherMode]}.`);
-    }, "Could not move the memory.");
-
   const destroy = () =>
     void run(async () => {
       try {
@@ -281,7 +266,7 @@ function MemoryItem({
           </p>
           {confirmDelete ? (
             <div className="actions" role="group" aria-label="Delete this memory?">
-              <span className="small">Delete this memory? Its text is removed at once.</span>
+              <span className="small">Delete this memory? Its text goes at once.</span>
               <button type="button" className="button button-danger button-small" disabled={busy} onClick={destroy}>
                 {busy ? "Deleting…" : "Delete"}
               </button>
@@ -298,9 +283,6 @@ function MemoryItem({
               )}
               <button type="button" className="button button-small" disabled={busy} onClick={() => setEditing(true)}>
                 Edit
-              </button>
-              <button type="button" className="button button-small" disabled={busy} onClick={move}>
-                Move to {MODE_LABELS[otherMode]}
               </button>
               <button
                 type="button"

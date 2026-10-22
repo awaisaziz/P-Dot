@@ -1,7 +1,7 @@
 import "server-only";
 import { z } from "zod";
 import { MAX_MEMORY_CHARS, RETRIEVAL_MATCH_COUNT } from "@/lib/limits";
-import type { Mode } from "@/types/api";
+import { WORKSPACE_MODE } from "@/lib/mode";
 import type { MemoryRepository } from "@/server/db/memories";
 import type { RetrievalRepository } from "@/server/db/retrieval";
 import { completeText, type CompletionDeps } from "@/server/assistant/complete";
@@ -25,7 +25,6 @@ export interface SummarizerDeps extends CompletionDeps {
 export interface SummarizeSessionInput {
   userId: string;
   requestId: string;
-  mode: Mode;
   /** The conversation, oldest first. */
   transcript: HistoryMessage[];
   /** The reply the suggestions are shown under. Null when the conversation has none. */
@@ -144,7 +143,8 @@ export async function extractSessionMemories(
  * Saves each fact as a `proposed` memory unless the user already has it: an
  * active memory at least `dedupThreshold` similar, or a suggestion with the
  * same text that still waits. A fact whose vector cannot be made is saved
- * without one (it is not searchable until it is edited).
+ * without one (it is not searchable until it is edited). Both checks look at
+ * every memory whatever its stored mode (decision 0014).
  */
 export async function proposeSessionMemories(
   deps: Pick<SummarizerDeps, "memories" | "retrieval" | "embedder" | "log">,
@@ -154,7 +154,7 @@ export async function proposeSessionMemories(
   let createdCount = 0;
   let skippedCount = 0;
   const waiting = new Set(
-    (await deps.memories.listMemories(input.userId, input.mode, "proposed", 200)).map((memory) => normalized(memory.content)),
+    (await deps.memories.listMemories(input.userId, "proposed", 200)).map((memory) => normalized(memory.content)),
   );
   for (const fact of input.facts) {
     if (waiting.has(normalized(fact))) {
@@ -172,7 +172,7 @@ export async function proposeSessionMemories(
       });
     }
     if (vector) {
-      const matches = await deps.retrieval.matchMemories(vector, input.mode, Math.min(3, RETRIEVAL_MATCH_COUNT));
+      const matches = await deps.retrieval.matchMemories(vector, null, Math.min(3, RETRIEVAL_MATCH_COUNT));
       if (matches.some((match) => match.similarity >= threshold)) {
         skippedCount += 1;
         continue;
@@ -180,7 +180,7 @@ export async function proposeSessionMemories(
     }
     await deps.memories.createMemory(
       input.userId,
-      { mode: input.mode, content: fact, status: "proposed", source: "assistant", sourceMessageId: input.sourceMessageId },
+      { mode: WORKSPACE_MODE, content: fact, status: "proposed", source: "assistant", sourceMessageId: input.sourceMessageId },
       vector,
     );
     waiting.add(normalized(fact));

@@ -24,8 +24,8 @@ function InstallControl() {
               void promptInstall().then((outcome) =>
                 setMessage(
                   outcome === "accepted"
-                    ? "Installing. Open P-Dot from your home screen or app list."
-                    : "Not installed. You can install it later from your browser menu.",
+                    ? "Installing; open P-Dot from your home screen or app list."
+                    : "Not installed; you can install it later from your browser menu.",
                 ),
               )
             }
@@ -52,15 +52,15 @@ function InstallControl() {
     <p className="muted">
       {message ??
         (pwa.platform === "android"
-          ? "Open the browser menu (⋮) and choose Install app or Add to Home screen. If neither appears, P-Dot may already be installed."
-          : "This browser has not offered installation. In Chrome or Edge, use the install icon in the address bar or the browser menu.")}
+          ? "Use Install app or Add to Home screen in the browser menu (⋮)."
+          : "In Chrome or Edge, install from the icon in the address bar or the browser menu.")}
     </p>
   );
 }
 
 const PERMISSION_TEXT = {
   granted: "Allowed in this browser.",
-  denied: "Blocked in this browser. To allow them, open the site settings for P-Dot (the icon next to the address) and allow notifications.",
+  denied: "Blocked; allow notifications in this site's settings (the icon next to the address).",
   default: "Not allowed yet.",
   unsupported: "This browser does not support notifications.",
 } as const;
@@ -87,7 +87,7 @@ function NotificationControl() {
     setResult(null);
     try {
       await showTestNotification();
-      setResult("Test notification sent. If you did not see it, check that notifications are on for this browser.");
+      setResult("Test notification sent; if it did not appear, check your browser's notification settings.");
     } catch (err) {
       setResult(errorMessage(err, "Could not show a notification."));
     } finally {
@@ -137,10 +137,7 @@ export function AppSettings() {
       <h2 id="app-heading">App and notifications</h2>
       <InstallControl />
       <NotificationControl />
-      <p className="alert alert-warning small">
-        P-Dot does not send notifications yet. Allowing them now only prepares this device: reminder delivery and push
-        messages from P-Dot&apos;s server are still being built. The test notification comes from your browser.
-      </p>
+      <p className="alert alert-warning small">P-Dot does not send notifications yet; allowing them only prepares this device.</p>
     </section>
   );
 }

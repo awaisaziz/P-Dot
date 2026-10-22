@@ -40,34 +40,32 @@ function proposal(overrides: Partial<ActionProposalDTO> & { payload?: ActionPayl
 }
 
 describe("approval list filtering", () => {
-  it("matches by conversation and by mode", () => {
+  it("matches by conversation, whatever the payload's mode", () => {
     const p = proposal();
     expect(matchesFilter(p, {})).toBe(true);
     expect(matchesFilter(p, { conversationId: "c1" })).toBe(true);
     expect(matchesFilter(p, { conversationId: "c2" })).toBe(false);
-    expect(matchesFilter(p, { mode: "personal" })).toBe(true);
-    expect(matchesFilter(p, { mode: "work" })).toBe(false);
+    expect(matchesFilter(proposal({ payload: { kind: "create_task", mode: "work", title: "Ship" } }), {})).toBe(true);
   });
 
   it("shows waiting proposals and keeps the ones decided here", () => {
     const waiting = proposal({ id: "a" });
     const decidedHere = proposal({ id: "b", status: "executed" });
     const decidedElsewhere = proposal({ id: "c", status: "rejected" });
-    const { visible } = visibleProposals([waiting, decidedHere, decidedElsewhere], {}, new Set(["b"]));
+    const visible = visibleProposals([waiting, decidedHere, decidedElsewhere], {}, new Set(["b"]));
     expect(visible.map((p) => p.id)).toEqual(["a", "b"]);
   });
 
-  it("counts proposals waiting in the other mode", () => {
+  it("lists waiting proposals of every stored mode in one list", () => {
     const work = proposal({ id: "w", payload: { kind: "create_task", mode: "work", title: "Ship" } });
     const workDone = proposal({ id: "x", status: "executed", payload: { kind: "create_task", mode: "work", title: "Done" } });
-    const { visible, waitingInOtherMode } = visibleProposals([proposal(), work, workDone], { mode: "personal" }, new Set());
-    expect(visible.map((p) => p.id)).toEqual(["p1"]);
-    expect(waitingInOtherMode).toBe(1);
+    const visible = visibleProposals([proposal(), work, workDone], {}, new Set());
+    expect(visible.map((p) => p.id)).toEqual(["p1", "w"]);
   });
 });
 
 describe("payload details", () => {
-  it("describes what will run from the payload, not the summary", () => {
+  it("describes what will run from the payload, not the summary, and never shows the mode", () => {
     const details = payloadDetails(
       { kind: "create_reminder", mode: "work", title: "Call Sam", dueAt: "2026-10-30T17:00:00Z" },
       (iso) => `date(${iso})`,
@@ -75,11 +73,9 @@ describe("payload details", () => {
     expect(details).toEqual([
       ["Reminder", "Call Sam"],
       ["Due", "date(2026-10-30T17:00:00Z)"],
-      ["List", "Work"],
     ]);
     expect(payloadDetails({ kind: "save_memory", mode: "personal", content: "I'm vegetarian" }, String)).toEqual([
       ["Memory", "I'm vegetarian"],
-      ["List", "Personal"],
     ]);
   });
 });
@@ -148,12 +144,12 @@ describe("action log wording", () => {
     const detail = { kind: "create_task", mode: "personal", taskId: "t1" };
     expect(describeLogEntry(entry("executed", detail, true))).toEqual({
       title: "Action completed",
-      facts: ["Task", "Personal"],
+      facts: ["Task"],
       tone: "success",
     });
     const unconfirmed = {
       title: "Marked as completed",
-      facts: ["Task", "Personal", "P-Dot did not confirm this action."],
+      facts: ["Task", "P-Dot did not confirm this action."],
       tone: "neutral",
     };
     expect(describeLogEntry(entry("executed", detail, false))).toEqual(unconfirmed);
@@ -173,14 +169,13 @@ describe("action log wording", () => {
     expect(JSON.stringify(view)).not.toContain("t1");
   });
 
-  it("describes memory and reminder changes", () => {
+  it("describes memory and reminder changes without the stored mode", () => {
     expect(describeLogEntry(entry("memory_added", { memoryId: "m", mode: "work", source: "assistant" }))).toEqual({
       title: "Memory added",
-      facts: ["Work", "Suggested by P-Dot"],
+      facts: ["Suggested by P-Dot"],
       tone: "neutral",
     });
     expect(describeLogEntry(entry("reminder_changed", { reminderId: "r", mode: "personal", status: "done" })).facts).toEqual([
-      "Personal",
       "Marked done",
     ]);
     expect(describeLogEntry(entry("failed", { kind: "save_memory", error: "execution_failed" })).tone).toBe("danger");
@@ -193,21 +188,38 @@ describe("action log wording", () => {
 
   it("says how many searchable parts a document has, without its ID", () => {
     const view = describeLogEntry(entry("document_ready", { documentId: "d1", mode: "work", chunkCount: 3 }));
-    expect(view).toEqual({ title: "Document ready to search", facts: ["Work", "3 searchable parts"], tone: "neutral" });
+    expect(view).toEqual({ title: "Document ready to search", facts: ["3 searchable parts"], tone: "neutral" });
     expect(describeLogEntry(entry("document_ready", { chunkCount: 1 })).facts).toEqual(["1 searchable part"]);
   });
 
   it("names each document step, and shows a failed one as a problem", () => {
     expect(describeLogEntry(entry("document_added", { documentId: "d1", mode: "work", status: "processing" }))).toEqual({
       title: "Document added",
-      facts: ["Work", "Processing"],
+      facts: ["Processing"],
       tone: "neutral",
     });
     expect(describeLogEntry(entry("document_failed", { documentId: "d1", mode: "work" }))).toEqual({
       title: "Document could not be processed",
-      facts: ["Work"],
+      facts: [],
       tone: "danger",
     });
+  });
+
+  it("names connector events with the status and permission count, without the grant ID", () => {
+    const detail = { grantId: "g1", provider: "google", scopeCount: 4, status: "active" };
+    expect(describeLogEntry(entry("connector_added", detail))).toEqual({
+      title: "Connected Google",
+      facts: ["Active", "4 permissions"],
+      tone: "neutral",
+    });
+    expect(describeLogEntry(entry("connector_removed", { ...detail, scopeCount: 1 }))).toEqual({
+      title: "Disconnected Google",
+      facts: ["Active", "1 permission"],
+      tone: "neutral",
+    });
+    const reconnect = describeLogEntry(entry("connector_changed", { ...detail, status: "needs_reconnect" }));
+    expect(reconnect).toEqual({ title: "Google access changed", facts: ["Needs reconnecting", "4 permissions"], tone: "warning" });
+    expect(JSON.stringify(reconnect)).not.toContain("g1");
   });
 });
 
@@ -348,17 +360,21 @@ describe("api client", () => {
         throw new TypeError("Failed to fetch");
       }),
     );
-    await expect(apiRequest("/api/memories")).rejects.toMatchObject({ status: 0, code: "network_error" });
+    await expect(apiRequest("/api/memories")).rejects.toMatchObject({
+      status: 0,
+      code: "network_error",
+      message: "Could not reach the server; check your connection and retry.",
+    });
   });
 
   it("sends JSON same-origin without caching", async () => {
     const fetchMock = vi.fn<typeof fetch>(async () => Response.json({ id: "m1" }, { status: 201 }));
     vi.stubGlobal("fetch", fetchMock);
-    await expect(sendJson("/api/memories", "POST", { mode: "work", content: "x" })).resolves.toEqual({ id: "m1" });
+    await expect(sendJson("/api/memories", "POST", { content: "x" })).resolves.toEqual({ id: "m1" });
     const init = fetchMock.mock.calls[0]![1]!;
     expect(init).toMatchObject({ method: "POST", credentials: "same-origin", cache: "no-store" });
     expect(new Headers(init.headers).get("content-type")).toBe("application/json");
-    expect(init.body).toBe(JSON.stringify({ mode: "work", content: "x" }));
+    expect(init.body).toBe(JSON.stringify({ content: "x" }));
   });
 });
 

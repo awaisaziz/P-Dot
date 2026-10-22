@@ -47,10 +47,29 @@ describe("findBakedSecrets", () => {
         NEBIUS_MAX_OUTPUT_TOKENS: "1024",
         CHAT_REQUESTS_PER_WINDOW: "30",
         CHAT_WINDOW_SECONDS: "3600",
+        GOOGLE_CLIENT_ID: "123-abc.apps.googleusercontent.com",
+        CONNECTOR_TOKEN_KEY_VERSION: "1",
+        CONNECTOR_ALLOWED_USER_IDS: "*",
       },
       test: {},
     });
     expect(found).toEqual([]);
+  });
+
+  it("flags the Google client secret and the connector token keys", () => {
+    const found = findBakedSecrets({
+      production: {
+        GOOGLE_CLIENT_ID: "123-abc.apps.googleusercontent.com",
+        GOOGLE_CLIENT_SECRET: "s",
+        CONNECTOR_TOKEN_KEYS: '{"1":"k"}',
+        CONNECTOR_TOKEN_KEY: "k",
+      },
+    });
+    expect(found).toEqual([
+      "production.GOOGLE_CLIENT_SECRET",
+      "production.CONNECTOR_TOKEN_KEYS",
+      "production.CONNECTOR_TOKEN_KEY",
+    ]);
   });
 });
 
@@ -86,6 +105,38 @@ describe("check-worker-env command", () => {
     expect(result.stderr).toContain("production.PGPASSWORD");
     expect(result.stderr).toContain("production.POSTGRES_URL");
     expect(result.stdout + result.stderr).not.toContain(FAKE);
+  });
+
+  it("fails on the Google client secret and the connector token keys, without printing them", () => {
+    const keys = JSON.stringify({ "1": FAKE });
+    const env = `export const production = ${JSON.stringify({
+      GOOGLE_CLIENT_ID: "123-abc.apps.googleusercontent.com",
+      GOOGLE_CLIENT_SECRET: FAKE,
+      CONNECTOR_TOKEN_KEYS: keys,
+    })};
+export const development = {};
+export const test = {};
+`;
+    const result = run(project(env));
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("production.GOOGLE_CLIENT_SECRET");
+    expect(result.stderr).toContain("production.CONNECTOR_TOKEN_KEYS");
+    expect(result.stderr).not.toContain("production.GOOGLE_CLIENT_ID");
+    expect(result.stdout + result.stderr).not.toContain(FAKE);
+  });
+
+  it("passes with the plain connector settings", () => {
+    const env = `export const production = ${JSON.stringify({
+      GOOGLE_CLIENT_ID: "123-abc.apps.googleusercontent.com",
+      CONNECTOR_TOKEN_KEY_VERSION: "2",
+      CONNECTOR_ALLOWED_USER_IDS: "*",
+      GOOGLE_CLIENT_SECRET: "",
+      CONNECTOR_TOKEN_KEYS: "",
+    })};
+export const development = {};
+export const test = {};
+`;
+    expect(run(project(env)).status).toBe(0);
   });
 
   it("fails when started through a symbolic link", (ctx) => {

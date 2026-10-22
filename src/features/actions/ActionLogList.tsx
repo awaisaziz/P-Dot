@@ -57,10 +57,7 @@ export function ActionLogList({ initialEntries, limit }: { initialEntries: Actio
         </p>
       )}
       {entries.length === 0 && (
-        <p className="muted">
-          Nothing yet. Adding or changing a memory or a reminder, and every action P-Dot proposes, approves or runs, will
-          appear here.
-        </p>
+        <p className="muted">Nothing yet; proposals, decisions and data changes will appear here.</p>
       )}
       {groups.map((group) => (
         <div key={group.day} className="log-day">

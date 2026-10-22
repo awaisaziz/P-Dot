@@ -14,6 +14,21 @@ async function isSignedIn(): Promise<boolean> {
   }
 }
 
+// What P-Dot does today, one line each.
+const FEATURES = [
+  { title: "Verified flight checks", line: "Fares quoted from travel pages, each with its source and the time it was read." },
+  { title: "Google Calendar and Drive", line: "Reads your calendar, Docs, Slides and Sheets only while you turn Google on." },
+  { title: "Memory you control", line: "See, edit or delete everything it remembers." },
+  { title: "Approvals and a full log", line: "Asks before it acts by default, and every action is logged." },
+];
+
+const CONNECT = [
+  { name: "Google Calendar", chip: "calendar" },
+  { name: "Docs", chip: "docs" },
+  { name: "Slides", chip: "slides" },
+  { name: "Sheets", chip: "sheets" },
+];
+
 export default async function LandingPage() {
   const signedIn = await isSignedIn();
 
@@ -49,10 +64,18 @@ export default async function LandingPage() {
             <br />
             <span className="gradient-text">Get it done.</span>
           </h1>
-          <p className="lead">
-            A private agent on open Nemotron that never trains on your data. You can see and edit everything it
-            remembers. It acts on your own laptop and phone, and every action is approved and logged.
-          </p>
+          <p className="lead">A private assistant that quotes fares and facts from their sources, asks before it acts, and logs every action.</p>
+          <ul className="landing-features">
+            {FEATURES.map((feature) => (
+              <li key={feature.title} className="landing-feature">
+                <span className="landing-feature-mark" aria-hidden="true" />
+                <span className="landing-feature-body">
+                  <strong>{feature.title}</strong>
+                  <span className="muted">{feature.line}</span>
+                </span>
+              </li>
+            ))}
+          </ul>
           <div className="actions">
             {signedIn ? (
               <Link className="button button-primary button-large" href="/chat">
@@ -70,10 +93,10 @@ export default async function LandingPage() {
             )}
           </div>
           <div className="connect-row">
-            <span className="connect-label">Connect your tools</span>
-            {["Gmail", "Calendar", "GitHub", "Telegram"].map((name) => (
-              <span key={name} className={`chip chip-${name.toLowerCase()}`}>
-                {name}
+            <span className="connect-label">Connect Google</span>
+            {CONNECT.map((item) => (
+              <span key={item.name} className={`chip chip-${item.chip}`}>
+                {item.name}
               </span>
             ))}
             <Link className="button button-primary button-small" href="/connectors">
@@ -81,9 +104,7 @@ export default async function LandingPage() {
             </Link>
           </div>
           <p className="muted small landing-note">
-            <strong>Powered by NVIDIA Nemotron, deployed through Nebius</strong> on your own account, so you choose the
-            model and hold the keys. Memory, approvals and the action log are in place; replies do not use memories yet,
-            P-Dot does not propose actions in chat yet, and device actions are still being built.
+            Runs on Nebius Token Factory with Tavily web search; Gmail, messaging and device actions are still being built.
           </p>
         </section>
 

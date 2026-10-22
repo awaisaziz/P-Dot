@@ -24,8 +24,8 @@ export interface NewChunk {
  * rule in the database. Embeddings are written but never read back.
  */
 export interface DocumentRepository {
-  /** Newest first. */
-  listDocuments(userId: string, mode: Mode, limit: number): Promise<DocumentDTO[]>;
+  /** Newest first. `mode`, when given, keeps only the rows saved with it (decision 0014: the app passes none). */
+  listDocuments(userId: string, limit: number, mode?: Mode): Promise<DocumentDTO[]>;
   /** Creates the document with status "processing". */
   createDocument(userId: string, document: NewDocument): Promise<DocumentDTO>;
   insertChunks(userId: string, documentId: string, chunks: NewChunk[]): Promise<void>;
@@ -71,14 +71,10 @@ function toDocument(row: unknown): DocumentDTO {
 
 export function createDocumentRepository(supabase: SupabaseClient): DocumentRepository {
   return {
-    async listDocuments(userId, mode, limit) {
-      const { data, error } = await supabase
-        .from("documents")
-        .select(DOCUMENT_COLUMNS)
-        .eq("user_id", userId)
-        .eq("mode", mode)
-        .order("created_at", { ascending: false })
-        .limit(limit);
+    async listDocuments(userId, limit, mode) {
+      let query = supabase.from("documents").select(DOCUMENT_COLUMNS).eq("user_id", userId);
+      if (mode) query = query.eq("mode", mode);
+      const { data, error } = await query.order("created_at", { ascending: false }).limit(limit);
       if (error) throw new RepositoryError("listDocuments");
       return (data ?? []).map(toDocument);
     },
