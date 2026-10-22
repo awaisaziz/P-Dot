@@ -15,7 +15,12 @@ const nextConfig: NextConfig = {
   // with OpenNext and keeps the default output.
   ...(process.env.NEXT_OUTPUT === "standalone" ? { output: "standalone" as const } : {}),
   async headers() {
-    return [{ source: "/:path*", headers: securityHeaders }];
+    return [
+      { source: "/:path*", headers: securityHeaders },
+      // The service worker must be re-checked on every visit, so updates reach installed apps.
+      // On Cloudflare, static files skip these rules, so public/_headers sets the same header there.
+      { source: "/sw.js", headers: [{ key: "Cache-Control", value: "no-cache" }] },
+    ];
   },
 };
 

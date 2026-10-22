@@ -14,6 +14,7 @@ This guide tells people and coding agents how P-Dot goes from a branch to the li
 - Hosting: one Cloudflare Worker named `pdot`, built with the OpenNext adapter. Decision: [0004](decisions/0004-cloudflare-workers-deployment.md).
 - Database and accounts: one hosted Supabase project. Production and previews use the **same** database.
 - The `workers.dev` address for production is off (`workers_dev: false`). Production is served only on the custom domain. `preview_urls: true` turns on `workers.dev` links for Previews and for each uploaded version.
+- The fork `awaisaziz/P-Dot` deploys to Vercel with its own Supabase project instead: see [DEPLOYMENT-VERCEL.md](DEPLOYMENT-VERCEL.md) ([decision 0017](decisions/0017-vercel-deployment-for-the-fork.md)).
 
 ## The normal flow
 

@@ -1,5 +1,7 @@
 import "server-only";
+import { AsyncLocalStorage } from "node:async_hooks";
 import { getCloudflareContext } from "@opennextjs/cloudflare";
+import { after } from "next/server";
 import { ConfigError } from "@/lib/supabase-config";
 import type { AuthContext } from "@/server/auth/session";
 import type { AssistantConfig } from "@/server/config";
@@ -43,7 +45,7 @@ export function createAssistantDeps(auth: AuthContext, config: AssistantConfig):
     breaker,
     now: () => new Date(),
     log: logEvent,
-    waitUntil,
+    waitUntil: createWaitUntilForRequest(),
     contextRecords: createContextRecordRepository(auth.supabase),
     memories: createMemoryRepository(auth.supabase),
     retrieval: createRetrievalRepository(auth.supabase),
@@ -97,16 +99,34 @@ export function createModelProvider(config: AssistantConfig): ModelProvider {
 }
 
 /**
- * On Cloudflare Workers, work still running when the client disconnects is
- * cancelled unless it is passed to waitUntil. Outside Workers (next dev,
- * tests) there is no context, and the work simply runs.
+ * Keeps work running after the response ends. On Cloudflare Workers it goes to
+ * the request's ctx.waitUntil; elsewhere (Vercel, `next start`) to Next's
+ * after(), which hands it to the platform's waitUntil (decision 0017). Outside
+ * a request (tests, scripts) neither exists, and the work simply runs.
  */
 export function waitUntil(work: Promise<unknown>): void {
   try {
     getCloudflareContext().ctx.waitUntil(work);
+    return;
   } catch {
     // Not running in the Workers runtime.
   }
+  try {
+    after(work);
+  } catch {
+    // Outside a request scope.
+  }
+}
+
+/**
+ * waitUntil bound to the request that is running now. after() works only in
+ * the request's async context, but a streamed reply runs most of its code
+ * after the route handler has returned, when the client reads the next chunk.
+ * Call this in the route handler, as createAssistantDeps does.
+ */
+export function createWaitUntilForRequest(): (work: Promise<unknown>) => void {
+  const inRequest = AsyncLocalStorage.snapshot();
+  return (work) => inRequest(() => waitUntil(work));
 }
 
 /**

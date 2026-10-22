@@ -1,6 +1,6 @@
 # P-Dot
 
-A personal assistant with a web interface, a Cloudflare Workers backend, Nebius model inference, and optional Tavily web search. The whole stack can also run on one computer with a local model standing in for Nebius ([docs/LOCAL-SIMULATION.md](docs/LOCAL-SIMULATION.md)), or on a virtual machine with its own database ([docs/DEPLOYMENT-VM.md](docs/DEPLOYMENT-VM.md)).
+A personal assistant with a web interface, a Cloudflare Workers backend, Nebius model inference, and optional Tavily web search. The whole stack can also run on one computer with a local model standing in for Nebius ([docs/LOCAL-SIMULATION.md](docs/LOCAL-SIMULATION.md)), on a virtual machine with its own database ([docs/DEPLOYMENT-VM.md](docs/DEPLOYMENT-VM.md)), or on Vercel with its own Supabase project ([docs/DEPLOYMENT-VERCEL.md](docs/DEPLOYMENT-VERCEL.md)).
 
 **Status: MVP implementation in progress.** Working: accounts, one workspace (no Personal and Work tabs), a streaming chat with a tool loop (web search, memory, documents, task and reminder proposals), **grounded workflows** that check flights and research facts and show only what is quoted word for word from the pages read, a **Google connector** that reads Calendar, Docs, Slides, Sheets and Drive while the user's Google chip is on, a one-line run panel and result cards under each reply, conversation history, a to-do list, reminders, browser dictation, approval cards, a Memory page, "What was sent", an action log, and an installable app for Android. Routines, scheduled delivery and device pairing are still previews. Decisions [0014](docs/decisions/0014-one-workspace.md), [0015](docs/decisions/0015-grounded-workflows.md) and [0016](docs/decisions/0016-google-connectors.md) are proposed and need the owner's review. Unit tests use mocked providers; the database rules were tested against a local Supabase. A few small real Nebius calls checked the token usage and reasoning format (see [decision 0006](docs/decisions/0006-global-spend-guard.md)); a full chat through the live app has not been tested yet. The app is live at https://pdot.iampatelom.com (first deployed 2026-10-19); chat replies there say "not configured" until the Nebius key is set. A global spend guard caps what all users together can spend (see [Usage limits](#usage-limits)). See [What works today](#what-works-today) and [Verification status](#verification-status).
 
@@ -250,7 +250,7 @@ All private endpoints require the Supabase session cookie and scope data to the 
 | `src/lib/`, `src/types/` | Shared limits, validation schemas, URL safety helpers, API contracts |
 | `supabase/migrations/` | Database schema, RLS policies, the quota function, the spend guard, memory and actions, and (2026-10-22) one workspace, `message_results` and `connector_grants` |
 | `tests/` | Unit tests (`unit/`), the database gate and the live Supabase RLS test (`integration/`), shared fakes (`support/`) |
-| `docs/` | PRD, architecture, [deployment guide](docs/DEPLOYMENT.md), [provider reliability lessons](docs/PROVIDER-RELIABILITY.md), decision records |
+| `docs/` | PRD, architecture, [deployment guide](docs/DEPLOYMENT.md), [Vercel guide](docs/DEPLOYMENT-VERCEL.md), [provider reliability lessons](docs/PROVIDER-RELIABILITY.md), decision records |
 | `CHANGELOG.md` | What changed, the problem, and how it was resolved, for each pull request |
 | `scripts/` | `check-worker-env.mjs` and `worker-env-rules.mjs`: deploy guard against secrets in the Worker bundle. `check-changelog.mjs` and `changelog-rules.mjs`: changelog entry check |
 | `src/app/icon.svg`, `favicon.ico`, `apple-icon.png` | Site icon ("P." on the indigo-to-violet accent); the app icons in `public/icons/` use the same mark |
@@ -262,6 +262,10 @@ All private endpoints require the Supabase session cookie and scope data to the 
 ## Deploying on a virtual machine
 
 **Read [docs/DEPLOYMENT-VM.md](docs/DEPLOYMENT-VM.md).** `deploy/docker-compose.yml` runs the app, Supabase Auth, PostgREST, the gateway and Postgres with pgvector on one machine, applies the migrations, and serves HTTPS with Caddy. Models run on Nebius and web search on Tavily, with server-side keys. The database never leaves the machine.
+
+## Deploying to Vercel
+
+**Read [docs/DEPLOYMENT-VERCEL.md](docs/DEPLOYMENT-VERCEL.md).** The fork `awaisaziz/P-Dot` deploys to Vercel with its own Supabase project ([decision 0017](docs/decisions/0017-vercel-deployment-for-the-fork.md)): `next build` on the Node.js runtime, settings and keys as Vercel environment variables, and migrations applied with the Supabase CLI. Work that outlives a reply goes through Next's `after()`, and a chat request may run for up to 300 seconds. Not deployed yet.
 
 ## Deploying to Cloudflare
 

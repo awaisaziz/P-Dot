@@ -2,6 +2,7 @@
 
 - Status: Accepted (user decision, 2026-10-15)
 - Supersedes: the Vercel hosting assumption in the PRD and architecture
+- Amended by: [0017](0017-vercel-deployment-for-the-fork.md) for the `awaisaziz/P-Dot` fork, which deploys to Vercel (proposed)
 
 ## Decision
 

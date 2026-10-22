@@ -23,6 +23,7 @@ deploy/data/
 .open-next/
 .wrangler/
 .dev.vars
+.vercel/
 playwright-report/
 test-results/
 tests/evals/reports/eval-report-*.md

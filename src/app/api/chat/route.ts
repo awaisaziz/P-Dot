@@ -9,6 +9,13 @@ import { errorResponse } from "@/server/http/responses";
 import { withAuthenticatedRoute } from "@/server/http/route";
 
 /**
+ * The longest a reply may run on Vercel (decision 0017). Tool calls, a flight
+ * check and the heavy tier can take minutes; 300 seconds is the Hobby maximum
+ * with Fluid compute. Cloudflare Workers ignore it.
+ */
+export const maxDuration = 300;
+
+/**
  * POST /api/chat — send a message (or retry the latest unanswered one) and
  * stream the assistant's reply as NDJSON. See ChatStreamEvent in src/types/api.ts.
  */
